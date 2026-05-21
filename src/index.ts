@@ -1,8 +1,9 @@
-import { forwardNonStreaming, buildStreamingResponse } from './converter';
+import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse } from './converter';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, getEnabledTokenStrings } from './token-store';
-import type { AnthropicRequest } from './types';
+import { getLogs, addLog } from './call-log';
+import type { AnthropicRequest, OpenAIChatRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
 
 interface Env {
@@ -11,6 +12,20 @@ interface Env {
   ZO_TOKENS?: string;
   COOLDOWN_MS?: string;
 }
+
+const ZO_MODELS = [
+  { id: 'zo:anthropic/claude-opus-4-7', owned_by: 'Anthropic' },
+  { id: 'zo:anthropic/claude-sonnet-4-6', owned_by: 'Anthropic' },
+  { id: 'zo:openai/gpt-5.3-codex', owned_by: 'OpenAI' },
+  { id: 'zo:openai/gpt-5.4', owned_by: 'OpenAI' },
+  { id: 'zo:openai/gpt-5.5', owned_by: 'OpenAI' },
+  { id: 'zo:openai/gpt-5.4-mini', owned_by: 'OpenAI' },
+  { id: 'zo:deepseek/deepseek-v4-pro', owned_by: 'DeepSeek' },
+  { id: 'zo:zai/glm-5', owned_by: 'Z.AI' },
+  { id: 'zo:minimax/minimax-m2.5', owned_by: 'Minimax' },
+  { id: 'zo:minimax/minimax-m2.7', owned_by: 'Minimax' },
+  { id: 'zo:google/gemini-3.1-pro-preview', owned_by: 'Google' },
+];
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -52,7 +67,6 @@ function parseEnvTokens(raw: string): string[] {
 async function buildPoolConfig(env: Env): Promise<KeyPoolConfig | null> {
   const cooldownMs = parseInt(env.COOLDOWN_MS || '60000', 10);
 
-  // KV tokens take priority
   if (env.KV) {
     const kvTokens = await getEnabledTokenStrings(env.KV);
     if (kvTokens.length > 0) {
@@ -60,7 +74,6 @@ async function buildPoolConfig(env: Env): Promise<KeyPoolConfig | null> {
     }
   }
 
-  // Fall back to env var
   if (env.ZO_TOKENS) {
     const envTokens = parseEnvTokens(env.ZO_TOKENS);
     if (envTokens.length > 0) {
@@ -81,6 +94,15 @@ function verifyAdmin(request: Request, env: Env): boolean {
   return key === env.GATEWAY_KEY;
 }
 
+function resolveToken(clientKey: string, env: Env, poolConfig: KeyPoolConfig | null): string | null {
+  const gatewayMode = isGatewayMode(env);
+  if (gatewayMode && poolConfig) {
+    if (clientKey !== env.GATEWAY_KEY) return null;
+    return pickToken(poolConfig);
+  }
+  return clientKey;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -89,7 +111,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // Admin panel - serve on both / and /admin
+    // Admin panel
     if ((url.pathname === '/' || url.pathname === '/admin') && request.method === 'GET') {
       const baseUrl = `${url.protocol}//${url.host}`;
       return new Response(getAdminHTML(baseUrl), {
@@ -97,7 +119,19 @@ export default {
       });
     }
 
-    // Admin API routes
+    // Models list (OpenAI compatible)
+    if (url.pathname === '/v1/models' && request.method === 'GET') {
+      const now = Math.floor(Date.now() / 1000);
+      const data = ZO_MODELS.map((m) => ({
+        id: m.id,
+        object: 'model',
+        created: now,
+        owned_by: m.owned_by,
+      }));
+      return jsonResponse({ object: 'list', data });
+    }
+
+    // Admin API - tokens
     if (url.pathname === '/admin/tokens') {
       if (!verifyAdmin(request, env)) {
         return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -144,9 +178,16 @@ export default {
       return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
+    // Admin API - logs
+    if (url.pathname === '/admin/logs' && request.method === 'GET') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+      const logs = await getLogs(env.KV);
+      return jsonResponse({ logs });
+    }
 
-
-    // Messages endpoint
+    // Anthropic Messages endpoint
     if (url.pathname === '/v1/messages' && request.method === 'POST') {
       const clientKey = extractClientKey(request);
       if (!clientKey) {
@@ -155,16 +196,10 @@ export default {
       }
 
       const poolConfig = await buildPoolConfig(env);
-      const gatewayMode = isGatewayMode(env);
+      const zoToken = resolveToken(clientKey, env, poolConfig);
 
-      let zoToken: string | null;
-      if (gatewayMode && poolConfig) {
-        if (clientKey !== env.GATEWAY_KEY) {
-          return errorResponse(401, 'authentication_error', 'Invalid API key.');
-        }
-        zoToken = pickToken(poolConfig);
-      } else {
-        zoToken = clientKey;
+      if (zoToken === null) {
+        return errorResponse(401, 'authentication_error', 'Invalid API key.');
       }
 
       if (!zoToken) {
@@ -186,6 +221,7 @@ export default {
       }
 
       const maxRetries = poolConfig ? poolConfig.tokens.length : 1;
+      const startTime = Date.now();
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         const token = attempt === 0 ? zoToken : pickToken(poolConfig!);
@@ -197,11 +233,13 @@ export default {
           if (body.stream) {
             const resp = buildStreamingResponse(body, token);
             markSuccess(token);
+            addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {});
             return resp;
           }
 
           const result = await forwardNonStreaming(body, token);
           markSuccess(token);
+          addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {});
           return new Response(JSON.stringify(result), {
             headers: { 'Content-Type': 'application/json', ...corsHeaders() },
           });
@@ -214,6 +252,7 @@ export default {
             continue;
           }
 
+          addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, message).catch(() => {});
           const status = message.includes('401') ? 401
             : message.includes('429') ? 429
             : message.includes('403') ? 403
@@ -222,6 +261,85 @@ export default {
         }
       }
 
+      addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {});
+      return errorResponse(503, 'api_error', 'All upstream tokens exhausted after retries.');
+    }
+
+    // OpenAI Chat Completions endpoint
+    if (url.pathname === '/v1/chat/completions' && request.method === 'POST') {
+      const clientKey = extractClientKey(request);
+      if (!clientKey) {
+        return errorResponse(401, 'authentication_error',
+          'Missing API key. Pass it via Authorization: Bearer <token> or x-api-key header.');
+      }
+
+      const poolConfig = await buildPoolConfig(env);
+      const zoToken = resolveToken(clientKey, env, poolConfig);
+
+      if (zoToken === null) {
+        return errorResponse(401, 'authentication_error', 'Invalid API key.');
+      }
+
+      if (!zoToken) {
+        return errorResponse(503, 'api_error', 'No upstream tokens available.');
+      }
+
+      let body: OpenAIChatRequest;
+      try {
+        body = (await request.json()) as OpenAIChatRequest;
+      } catch {
+        return errorResponse(400, 'invalid_request_error', 'Invalid JSON body.');
+      }
+
+      if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        return errorResponse(400, 'invalid_request_error', 'messages is required and must be a non-empty array.');
+      }
+      if (!body.model) {
+        return errorResponse(400, 'invalid_request_error', 'model is required.');
+      }
+
+      const maxRetries = poolConfig ? poolConfig.tokens.length : 1;
+      const startTime = Date.now();
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const token = attempt === 0 ? zoToken : pickToken(poolConfig!);
+        if (!token) {
+          return errorResponse(503, 'api_error', 'All upstream tokens are unavailable.');
+        }
+
+        try {
+          if (body.stream) {
+            const resp = buildOpenAIStreamingResponse(body, token);
+            markSuccess(token);
+            addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+            return resp;
+          }
+
+          const result = await forwardOpenAINonStreaming(body, token);
+          markSuccess(token);
+          addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+          return new Response(JSON.stringify(result), {
+            headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+          });
+        } catch (err) {
+          const message = (err as Error).message || 'Internal server error';
+          const isRetryable = message.includes('429') || message.includes('401') || message.includes('403');
+
+          if (isRetryable && poolConfig) {
+            markFailed(token);
+            continue;
+          }
+
+          addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, message).catch(() => {});
+          const status = message.includes('401') ? 401
+            : message.includes('429') ? 429
+            : message.includes('403') ? 403
+            : 502;
+          return errorResponse(status, 'api_error', message);
+        }
+      }
+
+      addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {});
       return errorResponse(503, 'api_error', 'All upstream tokens exhausted after retries.');
     }
 
