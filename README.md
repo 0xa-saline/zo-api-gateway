@@ -1,6 +1,6 @@
 # Zo Computer API Gateway
 
-一个基于 Cloudflare Workers 的 API 网关，将 Zo Computer 的 API 转换为兼容 Anthropic Messages API (`/v1/messages`) 的接口。自带号池管理面板，支持在线添加/管理多个 Zo Token。
+一个基于 Cloudflare Workers 的 API 网关，将 Zo Computer 的 API 转换为兼容 Anthropic Messages API (`/v1/messages`) 的接口。自带号池管理面板，支持在线添加/管理多个 Zo Token.
 
 ## 功能
 
