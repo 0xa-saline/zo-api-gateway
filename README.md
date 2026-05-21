@@ -2,6 +2,8 @@
 
 一个基于 Cloudflare Workers 的 API 网关，将 Zo Computer 的 API 转换为兼容 Anthropic Messages API (`/v1/messages`) 的接口。
 
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/loLollipop/zo-api-gateway)
+
 ## 功能
 
 - 兼容 Anthropic Messages API `/v1/messages` 端点
