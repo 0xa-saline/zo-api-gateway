@@ -11,6 +11,7 @@
 - 支持所有 Zo Computer 上可用的 Anthropic 模型
 - **多 Key 聚合**：多个 Zo Token 轮询调度，自动故障切换，对外统一为一个 Key
 - 自带引导页面，展示 Base URL 和使用说明
+- GitHub Actions 自动部署，push 到 main 即自动更新
 - 零成本部署在 Cloudflare Workers 上
 
 ## 两种工作模式
@@ -29,59 +30,73 @@
                                下一个 Zo Token → api.zo.computer
 ```
 
-## 部署
+## 部署（GitHub Actions 自动部署）
 
-### 1. 安装依赖
+只需要配置一次，之后每次 push 到 main 分支都会自动部署。
 
-```bash
-npm install
-```
+### 第 1 步：Fork 本仓库
 
-### 2. 配置多 Key 聚合（可选）
+点击 GitHub 页面右上角的 **Fork** 按钮，把仓库复制到你自己的账号下。
 
-通过 Cloudflare Secrets 配置（推荐，不会暴露在代码中）：
+### 第 2 步：获取 Cloudflare API Token
 
-```bash
-# 设置统一的 Gateway Key（客户端使用这个 Key）
-npx wrangler secret put GATEWAY_KEY
-# 输入你自定义的密钥，比如: sk-my-gateway-key-xxx
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. 点击右上角头像 → **我的个人资料** → 左侧 **API 令牌**
+3. 点击 **创建令牌**
+4. 选择 **编辑 Cloudflare Workers** 模板
+5. 确认权限后点击 **继续摘要** → **创建令牌**
+6. 复制生成的令牌（只显示一次）
 
-# 设置多个 Zo Token，逗号分隔
-npx wrangler secret put ZO_TOKENS
-# 输入: zo_sk_token1,zo_sk_token2,zo_sk_token3
+### 第 3 步：获取 Cloudflare Account ID
 
-# （可选）设置 Token 失败后冷却时间，默认 60000ms
-npx wrangler secret put COOLDOWN_MS
-# 输入: 60000
-```
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. 点击左侧 **Workers 和 Pages**
+3. 右侧会显示 **账户 ID**，复制它
 
-如果不配置这些变量，网关将以直通模式运行。
+### 第 4 步：配置 GitHub Secrets
 
-### 3. 本地开发
+进入你 Fork 的仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，依次添加：
 
-```bash
-npm run dev
-```
+| Secret 名称 | 值 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 |
+| `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID |
 
-本地开发时可创建 `.dev.vars` 文件配置环境变量：
+### 第 5 步：触发部署
 
-```
-GATEWAY_KEY=sk-my-test-key
-ZO_TOKENS=zo_sk_token1,zo_sk_token2
-COOLDOWN_MS=60000
-```
+随便改一下代码（比如编辑 README），push 到 main 分支，GitHub Actions 会自动部署。
 
-### 4. 部署到 Cloudflare
+部署成功后，你的 Worker URL 是：`https://zo-api-gateway.<你的子域>.workers.dev`
 
-```bash
-npm run deploy
-```
+在仓库的 **Actions** 页面可以看到部署状态和日志。
 
-首次部署需要登录 Cloudflare 账号。部署后你会获得一个 `*.workers.dev` 域名作为 Base URL。
+## 管理 Zo Token（部署后动态添加/修改）
 
-### 5. 绑定自定义域名（可选）
+Token 通过 Cloudflare Dashboard 管理，**随时可以添加新 Token，不需要改代码或重新部署**。
 
-在 Cloudflare Dashboard 中为 Worker 添加自定义域名路由。
+### 在 Cloudflare Dashboard 管理
+
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. 左侧 **Workers 和 Pages** → 点击 `zo-api-gateway`
+3. 点击 **设置** → **变量和机密**
+4. 在 **环境变量** 区域添加或编辑以下变量：
+
+| 变量名 | 类型 | 值 | 说明 |
+|---|---|---|---|
+| `GATEWAY_KEY` | 加密 | `sk-my-gateway-key` | 你自定义的统一 Key，客户端使用这个 |
+| `ZO_TOKENS` | 加密 | `zo_sk_token1,zo_sk_token2,zo_sk_token3` | 多个 Zo Token，逗号分隔 |
+| `COOLDOWN_MS` | 文本 | `60000` | （可选）Token 失败冷却时间，默认 60 秒 |
+
+5. 点击 **加密** 保存（敏感信息建议选加密类型）
+6. 保存后立即生效，无需重新部署
+
+### 后续新增 Token
+
+当你有新的 Zo 账号和 Token 时：
+
+1. 进入 Cloudflare Dashboard → Workers → `zo-api-gateway` → 设置 → 变量和机密
+2. 编辑 `ZO_TOKENS`，在末尾加上新 Token（逗号分隔）：`zo_sk_token1,zo_sk_token2,zo_sk_新token`
+3. 保存，立即生效
 
 ## 使用
 
