@@ -57,3 +57,70 @@ export interface ZoAskResponse {
   output: string;
   conversation_id: string;
 }
+
+// OpenAI Chat Completions API types
+
+export interface OpenAIMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface OpenAIChatRequest {
+  model: string;
+  messages: OpenAIMessage[];
+  max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  stream?: boolean;
+  stop?: string | string[];
+}
+
+export interface OpenAIChatChoice {
+  index: number;
+  message: OpenAIMessage;
+  finish_reason: 'stop' | 'length' | null;
+}
+
+export interface OpenAIChatResponse {
+  id: string;
+  object: 'chat.completion';
+  created: number;
+  model: string;
+  choices: OpenAIChatChoice[];
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export interface OpenAIStreamDelta {
+  role?: string;
+  content?: string;
+}
+
+export interface OpenAIStreamChoice {
+  index: number;
+  delta: OpenAIStreamDelta;
+  finish_reason: 'stop' | 'length' | null;
+}
+
+export interface OpenAIStreamChunk {
+  id: string;
+  object: 'chat.completion.chunk';
+  created: number;
+  model: string;
+  choices: OpenAIStreamChoice[];
+}
+
+// Call log
+
+export interface CallLog {
+  id: string;
+  time: number;
+  model: string;
+  format: 'anthropic' | 'openai';
+  status: 'ok' | 'error';
+  duration: number;
+  error?: string;
+}

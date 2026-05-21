@@ -30,7 +30,7 @@ export function getAdminHTML(baseUrl: string): string {
     .sidebar-footer button { width: 100%; padding: 8px; background: none; border: 1px solid #e7e5e4; border-radius: 8px; cursor: pointer; color: #78716c; font-size: 0.85rem; transition: all 0.15s; }
     .sidebar-footer button:hover { background: #fef2f2; color: #ef4444; border-color: #fecaca; }
 
-    .main { margin-left: 220px; padding: 32px; min-height: 100vh; }
+    .main { margin-left: 220px; padding: 28px 32px; min-height: 100vh; }
     .page { display: none; }
     .page.active { display: block; }
     .page-title { font-size: 1.4rem; font-weight: 700; color: #1c1917; margin-bottom: 24px; }
@@ -78,12 +78,16 @@ export function getAdminHTML(baseUrl: string): string {
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
     th { text-align: left; font-size: 0.8rem; color: #a8a29e; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; }
+    td { padding: 12px 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; }
     tr:hover td { background: #fafaf9; }
     .token-mono { font-family: 'SF Mono', Monaco, monospace; font-size: 0.82rem; color: #78716c; }
     .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
     .badge-on { background: #dcfce7; color: #16a34a; }
     .badge-off { background: #fee2e2; color: #dc2626; }
+    .badge-ok { background: #dcfce7; color: #16a34a; }
+    .badge-err { background: #fee2e2; color: #dc2626; }
+    .badge-anthropic { background: #dbeafe; color: #2563eb; }
+    .badge-openai { background: #fef3c7; color: #d97706; }
     .actions-cell { display: flex; gap: 6px; }
     .empty-state { text-align: center; color: #a8a29e; padding: 48px; font-size: 0.9rem; }
 
@@ -93,10 +97,11 @@ export function getAdminHTML(baseUrl: string): string {
     .add-row .input-group:last-of-type { flex: 2; }
 
     /* Info */
-    .code-box { background: #1c1917; color: #e7e5e4; border-radius: 8px; padding: 16px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem; word-break: break-all; margin: 8px 0 16px; }
-    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .info-item .label { font-size: 0.8rem; color: #a8a29e; margin-bottom: 4px; }
-    .info-item .val { font-size: 0.9rem; color: #1c1917; font-weight: 500; }
+    .code-box { background: #1c1917; color: #e7e5e4; border-radius: 8px; padding: 16px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.85rem; word-break: break-all; margin: 8px 0 16px; white-space: pre-wrap; }
+    .info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .info-item { background: #fafaf9; border-radius: 8px; padding: 12px; border: 1px solid #e7e5e4; }
+    .info-item .label { font-size: 0.75rem; color: #a8a29e; margin-bottom: 2px; }
+    .info-item .val { font-size: 0.85rem; color: #1c1917; font-weight: 500; font-family: 'SF Mono', Monaco, monospace; }
 
     /* Bulk */
     .bulk-toggle { margin-top: 12px; }
@@ -152,13 +157,13 @@ export function getAdminHTML(baseUrl: string): string {
         <div class="stat-card"><div class="label">冷却中</div><div class="value amber" id="s-cooldown">0</div></div>
       </div>
       <div class="card">
-        <h3>最近添加的 Token</h3>
+        <h3>调用日志</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>备注</th><th>Token</th><th>添加时间</th><th>状态</th></tr></thead>
-            <tbody id="recent-tokens"></tbody>
+            <thead><tr><th>时间</th><th>模型</th><th>格式</th><th>状态</th><th>耗时</th><th>错误</th></tr></thead>
+            <tbody id="log-list"></tbody>
           </table>
-          <div id="recent-empty" class="empty-state hidden">暂无 Token</div>
+          <div id="log-empty" class="empty-state hidden">暂无调用记录</div>
         </div>
       </div>
     </div>
@@ -199,18 +204,47 @@ export function getAdminHTML(baseUrl: string): string {
       <div class="page-title">接入信息</div>
       <div class="card">
         <h3>API 端点</h3>
-        <p style="color:#78716c;font-size:0.9rem">Base URL</p>
-        <div class="code-box">${baseUrl}</div>
-        <p style="color:#78716c;font-size:0.9rem">Messages 端点</p>
-        <div class="code-box">${baseUrl}/v1/messages</div>
+        <div class="info-grid">
+          <div class="info-item"><div class="label">Base URL</div><div class="val">${baseUrl}</div></div>
+          <div class="info-item"><div class="label">Anthropic 兼容</div><div class="val">/v1/messages</div></div>
+          <div class="info-item"><div class="label">OpenAI 兼容</div><div class="val">/v1/chat/completions</div></div>
+          <div class="info-item"><div class="label">模型列表</div><div class="val">/v1/models</div></div>
+        </div>
       </div>
       <div class="card">
         <h3>支持的模型</h3>
         <div class="info-grid">
-          <div class="info-item"><div class="label">Claude Opus</div><div class="val">claude-opus-4-7</div></div>
-          <div class="info-item"><div class="label">Claude Sonnet</div><div class="val">claude-sonnet-4</div></div>
-          <div class="info-item"><div class="label">Claude Haiku</div><div class="val">claude-haiku-4-5-20251001</div></div>
+          <div class="info-item"><div class="label">Anthropic</div><div class="val">claude-opus-4-7</div></div>
+          <div class="info-item"><div class="label">Anthropic</div><div class="val">claude-sonnet-4-6</div></div>
+          <div class="info-item"><div class="label">OpenAI</div><div class="val">gpt-5.3-codex</div></div>
+          <div class="info-item"><div class="label">OpenAI</div><div class="val">gpt-5.4 / gpt-5.5</div></div>
+          <div class="info-item"><div class="label">OpenAI</div><div class="val">gpt-5.4-mini</div></div>
+          <div class="info-item"><div class="label">DeepSeek</div><div class="val">deepseek-v4-pro</div></div>
+          <div class="info-item"><div class="label">Z.AI</div><div class="val">glm-5</div></div>
+          <div class="info-item"><div class="label">Minimax</div><div class="val">minimax-m2.5 / m2.7</div></div>
+          <div class="info-item"><div class="label">Google</div><div class="val">gemini-3.1-pro-preview</div></div>
         </div>
+      </div>
+      <div class="card">
+        <h3>OpenAI 格式 (通用)</h3>
+        <div class="code-box">curl -s ${baseUrl}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
+  -d '{
+    "model": "zo:openai/gpt-5.4",
+    "messages": [{"role":"user","content":"你好"}]
+  }'</div>
+      </div>
+      <div class="card">
+        <h3>Anthropic 格式</h3>
+        <div class="code-box">curl -s ${baseUrl}/v1/messages \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role":"user","content":"你好"}]
+  }'</div>
       </div>
       <div class="card">
         <h3>Claude Code 配置</h3>
@@ -218,17 +252,6 @@ export function getAdminHTML(baseUrl: string): string {
 export ANTHROPIC_API_KEY=你的GatewayKey
 
 claude</div>
-      </div>
-      <div class="card">
-        <h3>curl 示例</h3>
-        <div class="code-box">curl -s ${baseUrl}/v1/messages \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
-  -d '{
-    "model": "claude-sonnet-4",
-    "max_tokens": 1024,
-    "messages": [{"role":"user","content":"你好"}]
-  }'</div>
       </div>
     </div>
   </div>
@@ -267,7 +290,7 @@ async function login() {
     await api('GET', '/admin/tokens');
     document.getElementById('login-view').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
-    loadTokens();
+    loadDashboard();
   } catch (e) { toast('密钥错误', false); }
 }
 
@@ -287,19 +310,30 @@ document.querySelectorAll('.nav-item').forEach(item => {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     item.classList.add('active');
     document.getElementById('page-' + item.dataset.page).classList.add('active');
-    if (item.dataset.page === 'dashboard' || item.dataset.page === 'tokens') loadTokens();
+    if (item.dataset.page === 'dashboard') loadDashboard();
+    if (item.dataset.page === 'tokens') loadTokens();
   });
 });
+
+async function loadDashboard() {
+  try {
+    const [tokenData, logData] = await Promise.all([
+      api('GET', '/admin/tokens'),
+      api('GET', '/admin/logs'),
+    ]);
+    renderStats(tokenData.tokens, tokenData.pool_status);
+    renderLogs(logData.logs);
+  } catch (e) { toast('加载失败：' + e.message, false); }
+}
 
 async function loadTokens() {
   try {
     const data = await api('GET', '/admin/tokens');
-    renderDashboard(data.tokens, data.pool_status);
     renderTokenList(data.tokens);
   } catch (e) { toast('加载失败：' + e.message, false); }
 }
 
-function renderDashboard(tokens, pool) {
+function renderStats(tokens, pool) {
   const enabled = tokens.filter(t => t.enabled).length;
   const disabled = tokens.length - enabled;
   const cooldown = pool.total - pool.available;
@@ -307,15 +341,25 @@ function renderDashboard(tokens, pool) {
   document.getElementById('s-available').textContent = pool.available;
   document.getElementById('s-disabled').textContent = disabled;
   document.getElementById('s-cooldown').textContent = cooldown > 0 ? cooldown : 0;
+}
 
-  const tbody = document.getElementById('recent-tokens');
-  const empty = document.getElementById('recent-empty');
-  const recent = tokens.slice(-5).reverse();
-  if (recent.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); return; }
+function renderLogs(logs) {
+  const tbody = document.getElementById('log-list');
+  const empty = document.getElementById('log-empty');
+  if (!logs || logs.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); return; }
   empty.classList.add('hidden');
-  tbody.innerHTML = recent.map(t => {
-    const st = t.enabled ? '<span class="badge badge-on">启用</span>' : '<span class="badge badge-off">禁用</span>';
-    return \`<tr><td>\${t.label}</td><td class="token-mono">\${mask(t.token)}</td><td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td><td>\${st}</td></tr>\`;
+  const sorted = logs.slice().reverse();
+  tbody.innerHTML = sorted.map(l => {
+    const time = new Date(l.time).toLocaleString('zh-CN', { hour12: false });
+    const fmtBadge = l.format === 'openai'
+      ? '<span class="badge badge-openai">OpenAI</span>'
+      : '<span class="badge badge-anthropic">Anthropic</span>';
+    const stBadge = l.status === 'ok'
+      ? '<span class="badge badge-ok">成功</span>'
+      : '<span class="badge badge-err">失败</span>';
+    const dur = l.duration < 1000 ? l.duration + 'ms' : (l.duration / 1000).toFixed(1) + 's';
+    const err = l.error ? '<span style="color:#dc2626;font-size:0.8rem">' + l.error.slice(0, 60) + '</span>' : '-';
+    return \`<tr><td style="color:#a8a29e;white-space:nowrap">\${time}</td><td class="token-mono">\${l.model}</td><td>\${fmtBadge}</td><td>\${stBadge}</td><td>\${dur}</td><td>\${err}</td></tr>\`;
   }).join('');
 }
 

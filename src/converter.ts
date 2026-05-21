@@ -1,4 +1,4 @@
-import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest } from './types';
+import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk } from './types';
 
 const ZO_API_BASE = 'https://api.zo.computer';
 
@@ -219,6 +219,173 @@ export function buildStreamingResponse(
       } catch {
         // Writer already closed
       }
+    }
+  })();
+
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+// OpenAI Chat Completions support
+
+function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
+  const parts: string[] = [];
+  for (const msg of req.messages) {
+    const role = msg.role === 'user' ? 'Human' : msg.role === 'system' ? 'System' : 'Assistant';
+    parts.push(`[${role}]\n${msg.content}`);
+  }
+  let modelName = req.model;
+  if (!modelName.includes(':') && !modelName.startsWith('zo:')) {
+    modelName = `anthropic:${modelName}`;
+  }
+  if (modelName.startsWith('zo:')) {
+    modelName = modelName.slice(3);
+  }
+  return {
+    input: parts.join('\n\n'),
+    model_name: modelName,
+    stream: req.stream ?? false,
+  };
+}
+
+function generateChatId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let id = 'chatcmpl-';
+  for (let i = 0; i < 24; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
+function zoToOpenAI(zoOutput: string, model: string): OpenAIChatResponse {
+  const tokens = Math.ceil(zoOutput.length / 4);
+  return {
+    id: generateChatId(),
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: zoOutput },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 0, completion_tokens: tokens, total_tokens: tokens },
+  };
+}
+
+export async function forwardOpenAINonStreaming(
+  req: OpenAIChatRequest,
+  token: string,
+): Promise<OpenAIChatResponse> {
+  const zoReq = openaiToZo(req);
+  zoReq.stream = false;
+
+  const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(zoReq),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Zo API error ${resp.status}: ${body}`);
+  }
+
+  const zoResp = (await resp.json()) as { output: string };
+  return zoToOpenAI(zoResp.output, req.model);
+}
+
+export function buildOpenAIStreamingResponse(
+  req: OpenAIChatRequest,
+  token: string,
+): Response {
+  const zoReq = openaiToZo(req);
+  zoReq.stream = true;
+  const model = req.model;
+  const chatId = generateChatId();
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  const writeSSE = (data: string) => {
+    return writer.write(encoder.encode(`data: ${data}\n\n`));
+  };
+
+  (async () => {
+    try {
+      const startChunk: OpenAIStreamChunk = {
+        id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+        model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+      };
+      await writeSSE(JSON.stringify(startChunk));
+
+      const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(zoReq),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        const errChunk = { error: { message: `Zo API error ${resp.status}: ${body}`, type: 'api_error' } };
+        await writeSSE(JSON.stringify(errChunk));
+        await writeSSE('[DONE]');
+        await writer.close();
+        return;
+      }
+
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'FrontendModelResponse' && data.content) {
+                const chunk: OpenAIStreamChunk = {
+                  id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+                  model, choices: [{ index: 0, delta: { content: data.content }, finish_reason: null }],
+                };
+                await writeSSE(JSON.stringify(chunk));
+              }
+            } catch { /* skip malformed */ }
+            eventType = '';
+          }
+        }
+      }
+
+      const endChunk: OpenAIStreamChunk = {
+        id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+        model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      };
+      await writeSSE(JSON.stringify(endChunk));
+      await writeSSE('[DONE]');
+      await writer.close();
+    } catch (err) {
+      try {
+        await writeSSE(JSON.stringify({ error: { message: (err as Error).message, type: 'api_error' } }));
+        await writeSSE('[DONE]');
+        await writer.close();
+      } catch { /* already closed */ }
     }
   })();
 
