@@ -30,17 +30,17 @@ export function getAdminHTML(baseUrl: string): string {
     .sidebar-footer button { width: 100%; padding: 8px; background: none; border: 1px solid #e7e5e4; border-radius: 8px; cursor: pointer; color: #78716c; font-size: 0.85rem; transition: all 0.15s; }
     .sidebar-footer button:hover { background: #fef2f2; color: #ef4444; border-color: #fecaca; }
 
-    .main { margin-left: 220px; padding: 28px 32px; min-height: 100vh; }
-    .page { display: none; }
+    .main { margin-left: 220px; padding: 28px 32px; min-height: 100vh; width: calc(100% - 220px); }
+    .page { display: none; width: 100%; }
     .page.active { display: block; }
     .page-title { font-size: 1.4rem; font-weight: 700; color: #1c1917; margin-bottom: 24px; }
 
     /* Cards */
-    .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #e7e5e4; }
+    .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #e7e5e4; width: 100%; }
     .card h3 { font-size: 1rem; font-weight: 600; color: #1c1917; margin-bottom: 16px; }
 
     /* Stats */
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; width: 100%; }
     .stat-card { background: #fff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 20px; }
     .stat-card .label { font-size: 0.8rem; color: #a8a29e; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
     .stat-card .value { font-size: 2rem; font-weight: 700; margin-top: 4px; }
@@ -75,7 +75,7 @@ export function getAdminHTML(baseUrl: string): string {
     .btn-block { width: 100%; }
 
     /* Table */
-    .table-wrap { overflow-x: auto; }
+    .table-wrap { overflow-x: auto; width: 100%; }
     table { width: 100%; border-collapse: collapse; }
     th { text-align: left; font-size: 0.8rem; color: #a8a29e; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; }
     td { padding: 12px 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; }
