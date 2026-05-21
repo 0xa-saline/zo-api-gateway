@@ -1,6 +1,6 @@
 # Zo Computer API Gateway
 
-一个基于 Cloudflare Workers 的 API 网关，将 Zo Computer 的 API 转换为兼容 Anthropic Messages API (`/v1/messages`) 的接口。
+一个基于 Cloudflare Workers 的 API 网关，将 Zo Computer 的 API 转换为兼容 Anthropic Messages API (`/v1/messages`) 的接口。自带号池管理面板，支持在线添加/管理多个 Zo Token。
 
 ## 功能
 
@@ -9,10 +9,20 @@
 - 支持 `Authorization: Bearer` 和 `x-api-key` 双认证
 - 支持 `system` 系统提示词
 - 支持所有 Zo Computer 上可用的 Anthropic 模型
-- **多 Key 聚合**：多个 Zo Token 轮询调度，自动故障切换，对外统一为一个 Key
-- 自带引导页面，展示 Base URL 和使用说明
+- **号池管理面板** — Web 界面在线管理 Zo Token（添加/删除/启停），无需改代码
+- **多 Key 聚合** — 多个 Zo Token 轮询调度，自动故障切换，对外统一为一个 Key
 - GitHub Actions 自动部署，push 到 main 即自动更新
 - 零成本部署在 Cloudflare Workers 上
+
+## 号池管理面板
+
+部署后访问 `https://你的域名/admin` 即可打开管理面板：
+
+- 用 Gateway Key 登录
+- 查看所有 Token 的状态（总计/可用/已禁用）
+- 在线添加新 Token（单个或批量导入）
+- 启用/禁用/删除 Token
+- Token 数据持久化在 Cloudflare KV 中，不会丢失
 
 ## 两种工作模式
 
@@ -22,7 +32,7 @@
 
 ### 多 Key 聚合模式
 
-配置多个 Zo Token + 一个统一的 Gateway Key。客户端只需要用这一个 Gateway Key，网关自动轮询选择后端 Token，并在 Token 失败（429 限速 / 401 失效）时自动切换到下一个。
+配置 Gateway Key 后，通过管理面板添加多个 Zo Token。客户端只需要用一个 Gateway Key，网关自动轮询选择后端 Token。
 
 ```
 客户端 → Gateway Key → Worker → 轮询选择 Zo Token → api.zo.computer
@@ -53,7 +63,14 @@
 2. 点击左侧 **Workers 和 Pages**
 3. 右侧会显示 **账户 ID**，复制它
 
-### 第 4 步：配置 GitHub Secrets
+### 第 4 步：创建 KV 命名空间
+
+1. 在 Cloudflare Dashboard 左侧 → **Workers 和 Pages** → **KV**
+2. 点击 **创建命名空间**，名称填 `zo-gateway-tokens`
+3. 创建后复制 **命名空间 ID**
+4. 打开你 Fork 的仓库中的 `wrangler.toml`，把 `id = "YOUR_KV_NAMESPACE_ID"` 替换为你的命名空间 ID
+
+### 第 5 步：配置 GitHub Secrets
 
 进入你 Fork 的仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，依次添加：
 
@@ -62,41 +79,44 @@
 | `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 |
 | `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID |
 
-### 第 5 步：触发部署
+### 第 6 步：配置 Gateway Key
+
+部署成功后，在 Cloudflare Dashboard → **Workers 和 Pages** → 点击 `zo-api-gateway` → **设置** → **变量和机密**，添加：
+
+| 变量名 | 类型 | 值 |
+|---|---|---|
+| `GATEWAY_KEY` | 加密 | 你自定义的统一 Key，比如 `sk-my-key-xxx` |
+
+这个 Key 既是客户端调用 API 的密钥，也是管理面板的登录密码。
+
+### 第 7 步：触发部署
 
 随便改一下代码（比如编辑 README），push 到 main 分支，GitHub Actions 会自动部署。
 
-部署成功后，你的 Worker URL 是：`https://zo-api-gateway.<你的子域>.workers.dev`
+部署成功后：
+- Worker URL：`https://zo-api-gateway.<你的子域>.workers.dev`
+- 管理面板：`https://zo-api-gateway.<你的子域>.workers.dev/admin`
 
-在仓库的 **Actions** 页面可以看到部署状态和日志。
+## 管理 Zo Token
 
-## 管理 Zo Token（部署后动态添加/修改）
+### 通过管理面板（推荐）
 
-Token 通过 Cloudflare Dashboard 管理，**随时可以添加新 Token，不需要改代码或重新部署**。
+1. 访问 `https://你的域名/admin`
+2. 用 Gateway Key 登录
+3. 在面板上添加 Zo Token（支持单个添加和批量导入）
+4. 可以随时启用/禁用/删除 Token
 
-### 在 Cloudflare Dashboard 管理
+### 批量导入格式
 
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 左侧 **Workers 和 Pages** → 点击 `zo-api-gateway`
-3. 点击 **设置** → **变量和机密**
-4. 在 **环境变量** 区域添加或编辑以下变量：
+在管理面板的批量导入框中，每行一个 Token：
 
-| 变量名 | 类型 | 值 | 说明 |
-|---|---|---|---|
-| `GATEWAY_KEY` | 加密 | `sk-my-gateway-key` | 你自定义的统一 Key，客户端使用这个 |
-| `ZO_TOKENS` | 加密 | `zo_sk_token1,zo_sk_token2,zo_sk_token3` | 多个 Zo Token，逗号分隔 |
-| `COOLDOWN_MS` | 文本 | `60000` | （可选）Token 失败冷却时间，默认 60 秒 |
+```
+zo_sk_token1
+账号2:zo_sk_token2
+我的账号3:zo_sk_token3
+```
 
-5. 点击 **加密** 保存（敏感信息建议选加密类型）
-6. 保存后立即生效，无需重新部署
-
-### 后续新增 Token
-
-当你有新的 Zo 账号和 Token 时：
-
-1. 进入 Cloudflare Dashboard → Workers → `zo-api-gateway` → 设置 → 变量和机密
-2. 编辑 `ZO_TOKENS`，在末尾加上新 Token（逗号分隔）：`zo_sk_token1,zo_sk_token2,zo_sk_新token`
-3. 保存，立即生效
+格式为 `备注名:token`，不写备注名则自动编号。
 
 ## 使用
 
