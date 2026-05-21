@@ -5,6 +5,7 @@ export function getAdminHTML(baseUrl: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Zo Gateway</title>
+  <link rel="icon" type="image/png" href="/favicon.ico">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f4; color: #1c1917; line-height: 1.6; }
@@ -89,9 +90,9 @@ export function getAdminHTML(baseUrl: string): string {
 
     /* Table */
     .table-wrap { overflow-x: auto; width: 100%; }
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th { text-align: left; font-size: 0.8rem; color: #a8a29e; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 12px 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; }
+    td { padding: 12px 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     tr:hover td { background: #fafaf9; }
     .token-mono { font-family: 'SF Mono', Monaco, monospace; font-size: 0.82rem; color: #78716c; }
     .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
@@ -99,6 +100,15 @@ export function getAdminHTML(baseUrl: string): string {
     .badge-off { background: #fee2e2; color: #dc2626; }
     .actions-cell { display: flex; gap: 6px; }
     .empty-state { text-align: center; color: #a8a29e; padding: 48px; font-size: 0.9rem; }
+
+    /* Pagination */
+    .pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 1px solid #f5f5f4; }
+    .pagination .info { font-size: 0.8rem; color: #a8a29e; }
+    .pagination .pages { display: flex; gap: 4px; }
+    .page-btn { min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid #e7e5e4; border-radius: 8px; background: #fff; cursor: pointer; font-size: 0.85rem; color: #78716c; transition: all 0.15s; }
+    .page-btn:hover { border-color: #1c1917; color: #1c1917; }
+    .page-btn.active { background: #1c1917; color: #fff; border-color: #1c1917; }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     /* Add form */
     .add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
@@ -137,13 +147,13 @@ export function getAdminHTML(baseUrl: string): string {
   <div class="login-card">
     <div class="logo">&#9889;</div>
     <h1>Zo Gateway</h1>
-    <p class="sub">号池管理系统</p>
+    <p class="sub">\u53f7\u6c60\u7ba1\u7406\u7cfb\u7edf</p>
     <div class="input-group">
       <label>Gateway Key</label>
-      <input type="password" id="login-key" placeholder="输入管理密钥" autofocus>
+      <input type="password" id="login-key" placeholder="\u8f93\u5165\u7ba1\u7406\u5bc6\u94a5" autofocus>
     </div>
-    <label class="remember"><input type="checkbox" id="remember-me" checked> 记住登录状态</label>
-    <button class="btn btn-primary btn-block" onclick="login()">登录</button>
+    <label class="remember"><input type="checkbox" id="remember-me" checked> \u8bb0\u4f4f\u767b\u5f55\u72b6\u6001</label>
+    <button class="btn btn-primary btn-block" onclick="login()">\u767b\u5f55</button>
   </div>
 </div>
 
@@ -152,87 +162,89 @@ export function getAdminHTML(baseUrl: string): string {
   <div class="sidebar">
     <div class="sidebar-logo"><span class="icon">&#9889;</span> Zo Gateway</div>
     <nav class="sidebar-nav">
-      <div class="nav-item active" data-page="dashboard"><span class="nav-icon">&#9632;</span> 仪表盘</div>
-      <div class="nav-item" data-page="tokens"><span class="nav-icon">&#9883;</span> 号池管理</div>
-      <div class="nav-item" data-page="info"><span class="nav-icon">&#8635;</span> 接入信息</div>
+      <div class="nav-item active" data-page="dashboard"><span class="nav-icon">&#9632;</span> \u4eea\u8868\u76d8</div>
+      <div class="nav-item" data-page="tokens"><span class="nav-icon">&#9883;</span> \u53f7\u6c60\u7ba1\u7406</div>
+      <div class="nav-item" data-page="info"><span class="nav-icon">&#8635;</span> \u63a5\u5165\u4fe1\u606f</div>
     </nav>
     <div class="sidebar-footer">
-      <button onclick="logout()">退出登录</button>
+      <button onclick="logout()">\u9000\u51fa\u767b\u5f55</button>
     </div>
   </div>
 
   <div class="main">
     <!-- Dashboard -->
     <div class="page active" id="page-dashboard">
-      <div class="page-title">仪表盘</div>
+      <div class="page-title">\u4eea\u8868\u76d8</div>
       <div class="stats">
-        <div class="stat-card"><div class="label">总计 Token</div><div class="value blue" id="s-total">0</div></div>
-        <div class="stat-card"><div class="label">可用</div><div class="value green" id="s-available">0</div></div>
-        <div class="stat-card"><div class="label">已禁用</div><div class="value red" id="s-disabled">0</div></div>
-        <div class="stat-card"><div class="label">支持模型</div><div class="value purple" id="s-models">11</div></div>
+        <div class="stat-card"><div class="label">\u603b\u8ba1 Token</div><div class="value blue" id="s-total">0</div></div>
+        <div class="stat-card"><div class="label">\u53ef\u7528</div><div class="value green" id="s-available">0</div></div>
+        <div class="stat-card"><div class="label">\u5df2\u7981\u7528</div><div class="value red" id="s-disabled">0</div></div>
+        <div class="stat-card"><div class="label">\u652f\u6301\u6a21\u578b</div><div class="value purple" id="s-models">11</div></div>
       </div>
       <div class="card">
-        <h3>支持的模型</h3>
+        <h3>\u652f\u6301\u7684\u6a21\u578b</h3>
         <div class="model-tags" id="model-tags"></div>
       </div>
       <div class="card">
-        <h3>最近添加的账号</h3>
+        <h3>\u6700\u8fd1\u6dfb\u52a0\u7684\u8d26\u53f7</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>邮箱</th><th>Space</th><th>添加时间</th><th>状态</th></tr></thead>
+            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u72b6\u6001</th></tr></thead>
             <tbody id="recent-list"></tbody>
           </table>
-          <div id="recent-empty" class="empty-state hidden">暂无账号</div>
+          <div id="recent-empty" class="empty-state hidden">\u6682\u65e0\u8d26\u53f7</div>
         </div>
+        <div id="recent-pagination" class="pagination hidden"></div>
       </div>
     </div>
 
     <!-- Tokens -->
     <div class="page" id="page-tokens">
-      <div class="page-title">号池管理</div>
+      <div class="page-title">\u53f7\u6c60\u7ba1\u7406</div>
       <div class="card">
-        <h3>添加 Token</h3>
+        <h3>\u6dfb\u52a0 Token</h3>
         <div class="add-grid">
-          <div class="input-group"><label>邮箱</label><input type="text" id="add-email" placeholder="user@example.com"></div>
-          <div class="input-group"><label>Space 名称</label><input type="text" id="add-space" placeholder="dandyseal"></div>
+          <div class="input-group"><label>\u90ae\u7bb1</label><input type="text" id="add-email" placeholder="user@example.com"></div>
+          <div class="input-group"><label>Space \u540d\u79f0</label><input type="text" id="add-space" placeholder="dandyseal"></div>
           <div class="input-group"><label>Zo Access Token</label><input type="text" id="add-token" placeholder="zo_sk_..."></div>
-          <button class="btn btn-primary" onclick="addToken()">添加</button>
+          <button class="btn btn-primary" onclick="addToken()">\u6dfb\u52a0</button>
         </div>
         <div class="bulk-toggle">
-          <button class="btn btn-outline btn-sm" onclick="toggleBulk()">批量导入</button>
+          <button class="btn btn-outline btn-sm" onclick="toggleBulk()">\u6279\u91cf\u5bfc\u5165</button>
         </div>
         <div id="bulk-box" class="bulk-box hidden">
-          <textarea id="bulk-tokens" placeholder="每行一个，格式：邮箱,Space名称,Token&#10;user@example.com,dandyseal,zo_sk_xxx&#10;&#10;也支持只填Token：&#10;zo_sk_xxx"></textarea>
-          <p class="bulk-hint">格式：邮箱,Space名称,Token（邮箱和Space可省略）</p>
-          <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="bulkAdd()">批量添加</button>
+          <textarea id="bulk-tokens" placeholder="\u6bcf\u884c\u4e00\u4e2a\uff0c\u683c\u5f0f\uff1a\u90ae\u7bb1,Space\u540d\u79f0,Token&#10;user@example.com,dandyseal,zo_sk_xxx&#10;&#10;\u4e5f\u652f\u6301\u53ea\u586bToken\uff1a&#10;zo_sk_xxx"></textarea>
+          <p class="bulk-hint">\u683c\u5f0f\uff1a\u90ae\u7bb1,Space\u540d\u79f0,Token\uff08\u90ae\u7bb1\u548cSpace\u53ef\u7701\u7565\uff09</p>
+          <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="bulkAdd()">\u6279\u91cf\u6dfb\u52a0</button>
         </div>
       </div>
       <div class="card">
-        <h3>Token 列表</h3>
+        <h3>Token \u5217\u8868</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>邮箱</th><th>Space</th><th>Token</th><th>添加时间</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u72b6\u6001</th><th>\u64cd\u4f5c</th></tr></thead>
             <tbody id="token-list"></tbody>
           </table>
-          <div id="list-empty" class="empty-state hidden">还没有 Token</div>
+          <div id="list-empty" class="empty-state hidden">\u8fd8\u6ca1\u6709 Token</div>
         </div>
+        <div id="token-pagination" class="pagination hidden"></div>
       </div>
     </div>
 
     <!-- Info -->
     <div class="page" id="page-info">
-      <div class="page-title">接入信息</div>
+      <div class="page-title">\u63a5\u5165\u4fe1\u606f</div>
       <div class="card">
-        <h3>API 端点</h3>
+        <h3>API \u7aef\u70b9</h3>
         <div class="info-grid">
           <div class="info-item"><div class="label">Base URL</div><div class="val">${baseUrl}</div></div>
-          <div class="info-item"><div class="label">Anthropic 兼容</div><div class="val">/v1/messages</div></div>
-          <div class="info-item"><div class="label">OpenAI 兼容</div><div class="val">/v1/chat/completions</div></div>
-          <div class="info-item"><div class="label">模型列表</div><div class="val">/v1/models</div></div>
+          <div class="info-item"><div class="label">Anthropic \u517c\u5bb9</div><div class="val">/v1/messages</div></div>
+          <div class="info-item"><div class="label">OpenAI \u517c\u5bb9</div><div class="val">/v1/chat/completions</div></div>
+          <div class="info-item"><div class="label">\u6a21\u578b\u5217\u8868</div><div class="val">/v1/models</div></div>
         </div>
       </div>
       <div class="card">
-        <h3>支持的模型</h3>
+        <h3>\u652f\u6301\u7684\u6a21\u578b</h3>
         <div class="info-grid">
           <div class="info-item"><div class="label">Anthropic</div><div class="val">claude-opus-4-7</div></div>
           <div class="info-item"><div class="label">Anthropic</div><div class="val">claude-sonnet-4-6</div></div>
@@ -246,35 +258,35 @@ export function getAdminHTML(baseUrl: string): string {
         </div>
       </div>
       <div class="card">
-        <h3>OpenAI 格式 (通用)</h3>
+        <h3>OpenAI \u683c\u5f0f (\u901a\u7528)</h3>
         <div class="code-box">curl -s ${baseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
     "model": "zo:openai/gpt-5.4",
-    "messages": [{"role":"user","content":"你好"}]
+    "messages": [{"role":"user","content":"\u4f60\u597d"}]
   }'</div>
       </div>
       <div class="card">
-        <h3>Anthropic 格式</h3>
+        <h3>Anthropic \u683c\u5f0f</h3>
         <div class="code-box">curl -s ${baseUrl}/v1/messages \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
     "model": "claude-sonnet-4-6",
     "max_tokens": 1024,
-    "messages": [{"role":"user","content":"你好"}]
+    "messages": [{"role":"user","content":"\u4f60\u597d"}]
   }'</div>
       </div>
       <div class="card">
-        <h3>Claude Code 配置</h3>
+        <h3>Claude Code \u914d\u7f6e</h3>
         <div class="code-box">export ANTHROPIC_BASE_URL=${baseUrl}
-export ANTHROPIC_API_KEY=你的GatewayKey
+export ANTHROPIC_API_KEY=\u4f60\u7684GatewayKey
 
 claude</div>
       </div>
       <div class="card">
-        <h3>远程导入 Token（脚本/插件用）</h3>
+        <h3>\u8fdc\u7a0b\u5bfc\u5165 Token\uff08\u811a\u672c/\u63d2\u4ef6\u7528\uff09</h3>
         <div class="code-box">curl -X POST ${baseUrl}/admin/tokens \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
@@ -291,19 +303,19 @@ claude</div>
 <!-- Edit Modal -->
 <div id="edit-modal" class="modal-overlay hidden">
   <div class="modal">
-    <h3>编辑账号信息</h3>
+    <h3>\u7f16\u8f91\u8d26\u53f7\u4fe1\u606f</h3>
     <input type="hidden" id="edit-token-id">
     <div class="input-group">
-      <label>邮箱</label>
+      <label>\u90ae\u7bb1</label>
       <input type="text" id="edit-email" placeholder="user@example.com">
     </div>
     <div class="input-group">
-      <label>Space 名称</label>
+      <label>Space \u540d\u79f0</label>
       <input type="text" id="edit-space" placeholder="dandyseal">
     </div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeEditModal()">取消</button>
-      <button class="btn btn-primary" onclick="saveEdit()">保存</button>
+      <button class="btn btn-outline" onclick="closeEditModal()">\u53d6\u6d88</button>
+      <button class="btn btn-primary" onclick="saveEdit()">\u4fdd\u5b58</button>
     </div>
   </div>
 </div>
@@ -311,6 +323,10 @@ claude</div>
 <script>
 const BASE = '${baseUrl}';
 let authKey = '';
+const PAGE_SIZE = 10;
+let tokenPage = 1;
+let recentPage = 1;
+let allTokens = [];
 
 const ZO_MODELS = [
   { name: 'claude-opus-4-7', provider: 'anthropic' },
@@ -348,6 +364,27 @@ async function api(method, path, body) {
   return data;
 }
 
+function renderPagination(containerId, total, currentPage, onPageChange) {
+  const container = document.getElementById(containerId);
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  if (totalPages <= 1) { container.classList.add('hidden'); return; }
+  container.classList.remove('hidden');
+  const start = (currentPage - 1) * PAGE_SIZE + 1;
+  const end = Math.min(currentPage * PAGE_SIZE, total);
+  let html = '<div class="info">\u663e\u793a ' + start + '-' + end + ' / \u5171 ' + total + ' \u6761</div><div class="pages">';
+  html += '<button class="page-btn" onclick="' + onPageChange + '(' + (currentPage - 1) + ')"' + (currentPage <= 1 ? ' disabled' : '') + '>&lt;</button>';
+  for (let i = 1; i <= totalPages; i++) {
+    if (totalPages > 7 && i > 3 && i < totalPages - 2 && Math.abs(i - currentPage) > 1) {
+      if (i === 4 || i === totalPages - 3) html += '<span style="padding:0 6px;color:#a8a29e">...</span>';
+      continue;
+    }
+    html += '<button class="page-btn' + (i === currentPage ? ' active' : '') + '" onclick="' + onPageChange + '(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="page-btn" onclick="' + onPageChange + '(' + (currentPage + 1) + ')"' + (currentPage >= totalPages ? ' disabled' : '') + '>&gt;</button>';
+  html += '</div>';
+  container.innerHTML = html;
+}
+
 // Auto login
 (function tryAutoLogin() {
   const saved = localStorage.getItem('zo_gw_key');
@@ -365,7 +402,7 @@ async function api(method, path, body) {
 
 async function login() {
   authKey = document.getElementById('login-key').value.trim();
-  if (!authKey) return toast('请输入 Gateway Key', false);
+  if (!authKey) return toast('\u8bf7\u8f93\u5165 Gateway Key', false);
   try {
     await api('GET', '/admin/tokens');
     if (document.getElementById('remember-me').checked) {
@@ -374,7 +411,7 @@ async function login() {
     document.getElementById('login-view').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
     loadDashboard();
-  } catch (e) { toast('密钥错误', false); }
+  } catch (e) { toast('\u5bc6\u94a5\u9519\u8bef', false); }
 }
 
 function logout() {
@@ -395,24 +432,27 @@ document.querySelectorAll('.nav-item').forEach(item => {
     item.classList.add('active');
     document.getElementById('page-' + item.dataset.page).classList.add('active');
     if (item.dataset.page === 'dashboard') loadDashboard();
-    if (item.dataset.page === 'tokens') loadTokens();
+    if (item.dataset.page === 'tokens') { tokenPage = 1; loadTokens(); }
   });
 });
 
 async function loadDashboard() {
   try {
     const data = await api('GET', '/admin/tokens');
+    allTokens = data.tokens;
     renderStats(data.tokens, data.pool_status);
     renderModelTags();
-    renderRecent(data.tokens);
-  } catch (e) { toast('加载失败：' + e.message, false); }
+    recentPage = 1;
+    renderRecent();
+  } catch (e) { toast('\u52a0\u8f7d\u5931\u8d25\uff1a' + e.message, false); }
 }
 
 async function loadTokens() {
   try {
     const data = await api('GET', '/admin/tokens');
-    renderTokenList(data.tokens);
-  } catch (e) { toast('加载失败：' + e.message, false); }
+    allTokens = data.tokens;
+    renderTokenList();
+  } catch (e) { toast('\u52a0\u8f7d\u5931\u8d25\uff1a' + e.message, false); }
 }
 
 function renderStats(tokens, pool) {
@@ -431,14 +471,24 @@ function renderModelTags() {
   ).join('');
 }
 
-function renderRecent(tokens) {
+function goRecentPage(p) {
+  const sorted = allTokens.slice().sort((a, b) => b.addedAt - a.addedAt);
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  if (p < 1 || p > totalPages) return;
+  recentPage = p;
+  renderRecent();
+}
+
+function renderRecent() {
   const tbody = document.getElementById('recent-list');
   const empty = document.getElementById('recent-empty');
-  if (!tokens || tokens.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  const sorted = allTokens.slice().sort((a, b) => b.addedAt - a.addedAt);
+  if (sorted.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); document.getElementById('recent-pagination').classList.add('hidden'); return; }
   empty.classList.add('hidden');
-  const sorted = tokens.slice().sort((a, b) => b.addedAt - a.addedAt).slice(0, 10);
-  tbody.innerHTML = sorted.map(t => {
-    const st = t.enabled ? '<span class="badge badge-on">启用</span>' : '<span class="badge badge-off">禁用</span>';
+  const start = (recentPage - 1) * PAGE_SIZE;
+  const page = sorted.slice(start, start + PAGE_SIZE);
+  tbody.innerHTML = page.map(t => {
+    const st = t.enabled ? '<span class="badge badge-on">\u542f\u7528</span>' : '<span class="badge badge-off">\u7981\u7528</span>';
     return \`<tr>
       <td class="token-mono">\${t.email || '-'}</td>
       <td>\${t.spaceName || '-'}</td>
@@ -446,18 +496,28 @@ function renderRecent(tokens) {
       <td>\${st}</td>
     </tr>\`;
   }).join('');
+  renderPagination('recent-pagination', sorted.length, recentPage, 'goRecentPage');
 }
 
-function renderTokenList(tokens) {
+function goTokenPage(p) {
+  const totalPages = Math.ceil(allTokens.length / PAGE_SIZE);
+  if (p < 1 || p > totalPages) return;
+  tokenPage = p;
+  renderTokenList();
+}
+
+function renderTokenList() {
   const tbody = document.getElementById('token-list');
   const empty = document.getElementById('list-empty');
-  if (tokens.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  if (allTokens.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); document.getElementById('token-pagination').classList.add('hidden'); return; }
   empty.classList.add('hidden');
-  tbody.innerHTML = tokens.map(t => {
-    const st = t.enabled ? '<span class="badge badge-on">启用</span>' : '<span class="badge badge-off">禁用</span>';
+  const start = (tokenPage - 1) * PAGE_SIZE;
+  const page = allTokens.slice(start, start + PAGE_SIZE);
+  tbody.innerHTML = page.map(t => {
+    const st = t.enabled ? '<span class="badge badge-on">\u542f\u7528</span>' : '<span class="badge badge-off">\u7981\u7528</span>';
     const tBtn = t.enabled
-      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk('\${t.token}',false)">禁用</button>\`
-      : \`<button class="btn btn-success btn-sm" onclick="toggleTk('\${t.token}',true)">启用</button>\`;
+      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk('\${t.token}',false)">\u7981\u7528</button>\`
+      : \`<button class="btn btn-success btn-sm" onclick="toggleTk('\${t.token}',true)">\u542f\u7528</button>\`;
     return \`<tr>
       <td class="token-mono">\${t.email || '-'}</td>
       <td>\${t.spaceName || '-'}</td>
@@ -471,19 +531,20 @@ function renderTokenList(tokens) {
       </div></td>
     </tr>\`;
   }).join('');
+  renderPagination('token-pagination', allTokens.length, tokenPage, 'goTokenPage');
 }
 
 async function addToken() {
   const email = document.getElementById('add-email').value.trim();
   const spaceName = document.getElementById('add-space').value.trim();
   const token = document.getElementById('add-token').value.trim();
-  if (!token) return toast('请输入 Token', false);
+  if (!token) return toast('\u8bf7\u8f93\u5165 Token', false);
   try {
     await api('POST', '/admin/tokens', { token, email: email || undefined, spaceName: spaceName || undefined });
     document.getElementById('add-email').value = '';
     document.getElementById('add-space').value = '';
     document.getElementById('add-token').value = '';
-    toast('添加成功');
+    toast('\u6dfb\u52a0\u6210\u529f');
     loadTokens();
   } catch (e) { toast(e.message, false); }
 }
@@ -492,7 +553,7 @@ function toggleBulk() { document.getElementById('bulk-box').classList.toggle('hi
 
 async function bulkAdd() {
   const raw = document.getElementById('bulk-tokens').value.trim();
-  if (!raw) return toast('请输入 Token', false);
+  if (!raw) return toast('\u8bf7\u8f93\u5165 Token', false);
   const lines = raw.split('\\n').map(l => l.trim()).filter(Boolean);
   let ok = 0, fail = 0;
   for (const line of lines) {
@@ -512,7 +573,7 @@ async function bulkAdd() {
     } catch { fail++; }
   }
   document.getElementById('bulk-tokens').value = '';
-  toast(\`导入完成：\${ok} 成功\${fail > 0 ? '，' + fail + ' 失败' : ''}\`);
+  toast(\`\u5bfc\u5165\u5b8c\u6210\uff1a\${ok} \u6210\u529f\${fail > 0 ? '\uff0c' + fail + ' \u5931\u8d25' : ''}\`);
   loadTokens();
 }
 
@@ -534,20 +595,20 @@ async function saveEdit() {
   const spaceName = document.getElementById('edit-space').value.trim();
   try {
     await api('PATCH', '/admin/tokens', { token, email, spaceName });
-    toast('保存成功');
+    toast('\u4fdd\u5b58\u6210\u529f');
     closeEditModal();
     loadTokens();
   } catch (e) { toast(e.message, false); }
 }
 
 async function removeTk(token) {
-  if (!confirm('确定删除？')) return;
-  try { await api('DELETE', '/admin/tokens', { token }); toast('已删除'); loadTokens(); }
+  if (!confirm('\u786e\u5b9a\u5220\u9664\uff1f')) return;
+  try { await api('DELETE', '/admin/tokens', { token }); toast('\u5df2\u5220\u9664'); loadTokens(); }
   catch (e) { toast(e.message, false); }
 }
 
 async function toggleTk(token, enabled) {
-  try { await api('PATCH', '/admin/tokens', { token, enabled }); toast(enabled ? '已启用' : '已禁用'); loadTokens(); }
+  try { await api('PATCH', '/admin/tokens', { token, enabled }); toast(enabled ? '\u5df2\u542f\u7528' : '\u5df2\u7981\u7528'); loadTokens(); }
   catch (e) { toast(e.message, false); }
 }
 </script>
