@@ -1,7 +1,7 @@
 import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse } from './converter';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
-import { getTokens, addToken, removeToken, toggleToken, getEnabledTokenStrings } from './token-store';
+import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings } from './token-store';
 import { getLogs, addLog } from './call-log';
 import type { AnthropicRequest, OpenAIChatRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
@@ -143,7 +143,6 @@ export default {
         const poolStatus = poolConfig ? getPoolStatus(poolConfig) : { total: 0, available: 0 };
         const safeTokens = tokens.map((t) => ({
           token: t.token,
-          label: t.label,
           email: t.email || '',
           spaceName: t.spaceName || '',
           addedAt: t.addedAt,
@@ -153,10 +152,10 @@ export default {
       }
 
       if (request.method === 'POST') {
-        const body = (await request.json()) as { token: string; label: string; email?: string; spaceName?: string };
+        const body = (await request.json()) as { token: string; email?: string; spaceName?: string };
         if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
         try {
-          const tokens = await addToken(env.KV, body.token, body.label || '未命名', body.email, body.spaceName);
+          const tokens = await addToken(env.KV, body.token, body.email, body.spaceName);
           return jsonResponse({ ok: true, count: tokens.length });
         } catch (e) {
           return jsonResponse({ error: (e as Error).message }, 400);
@@ -171,10 +170,21 @@ export default {
       }
 
       if (request.method === 'PATCH') {
-        const body = (await request.json()) as { token: string; enabled: boolean };
+        const body = (await request.json()) as { token: string; enabled?: boolean; email?: string; spaceName?: string };
         if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
-        const tokens = await toggleToken(env.KV, body.token, body.enabled);
-        return jsonResponse({ ok: true, count: tokens.length });
+        if (body.enabled !== undefined) {
+          const tokens = await toggleToken(env.KV, body.token, body.enabled);
+          return jsonResponse({ ok: true, count: tokens.length });
+        }
+        if (body.email !== undefined || body.spaceName !== undefined) {
+          try {
+            const tokens = await updateToken(env.KV, body.token, { email: body.email, spaceName: body.spaceName });
+            return jsonResponse({ ok: true, count: tokens.length });
+          } catch (e) {
+            return jsonResponse({ error: (e as Error).message }, 400);
+          }
+        }
+        return jsonResponse({ error: 'No update fields provided' }, 400);
       }
 
       return jsonResponse({ error: 'Method not allowed' }, 405);
