@@ -15,15 +15,14 @@ export function getAdminHTML(baseUrl: string): string {
     .login-card { background: #fff; border-radius: 16px; padding: 40px; width: 380px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
     .login-card h1 { font-size: 1.5rem; text-align: center; margin-bottom: 6px; color: #1c1917; }
     .login-card .sub { text-align: center; color: #a8a29e; margin-bottom: 28px; font-size: 0.9rem; }
-    .login-card .logo { text-align: center; margin-bottom: 20px; }
-    .login-card .logo img { width: 64px; height: 64px; border-radius: 50%; }
+    .login-card .logo { text-align: center; margin-bottom: 20px; font-size: 2.5rem; }
     .login-card .remember { display: flex; align-items: center; gap: 6px; margin: 12px 0; font-size: 0.85rem; color: #78716c; }
 
     /* Layout */
     #app { display: none; min-height: 100vh; }
     .sidebar { width: 220px; background: #fff; border-right: 1px solid #e7e5e4; position: fixed; top: 0; left: 0; bottom: 0; display: flex; flex-direction: column; z-index: 10; }
     .sidebar-logo { padding: 24px 20px 20px; display: flex; align-items: center; gap: 10px; font-size: 1.15rem; font-weight: 700; color: #1c1917; border-bottom: 1px solid #e7e5e4; }
-    .sidebar-logo img { width: 28px; height: 28px; border-radius: 50%; }
+    .sidebar-logo span.icon { font-size: 1.4rem; }
     .sidebar-nav { flex: 1; padding: 12px 8px; }
     .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; cursor: pointer; color: #78716c; font-size: 0.9rem; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
     .nav-item:hover { background: #f5f5f4; color: #1c1917; }
@@ -146,7 +145,7 @@ export function getAdminHTML(baseUrl: string): string {
 <!-- Login -->
 <div id="login-view">
   <div class="login-card">
-    <div class="logo"><img src="/favicon.ico" alt="Zo"></div>
+    <div class="logo">&#9889;</div>
     <h1>Zo Gateway</h1>
     <p class="sub">\u53f7\u6c60\u7ba1\u7406\u7cfb\u7edf</p>
     <div class="input-group">
@@ -161,7 +160,7 @@ export function getAdminHTML(baseUrl: string): string {
 <!-- App -->
 <div id="app">
   <div class="sidebar">
-    <div class="sidebar-logo"><img src="/favicon.ico" alt="Zo"> Zo Gateway</div>
+    <div class="sidebar-logo"><span class="icon">&#9889;</span> Zo Gateway</div>
     <nav class="sidebar-nav">
       <div class="nav-item active" data-page="dashboard"><span class="nav-icon">&#9632;</span> \u4eea\u8868\u76d8</div>
       <div class="nav-item" data-page="tokens"><span class="nav-icon">&#9883;</span> \u53f7\u6c60\u7ba1\u7406</div>
