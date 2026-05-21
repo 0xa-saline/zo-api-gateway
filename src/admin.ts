@@ -32,13 +32,15 @@ export function getAdminHTML(baseUrl: string): string {
     .sidebar-footer button { width: 100%; padding: 8px; background: none; border: 1px solid #e7e5e4; border-radius: 8px; cursor: pointer; color: #78716c; font-size: 0.85rem; transition: all 0.15s; }
     .sidebar-footer button:hover { background: #fef2f2; color: #ef4444; border-color: #fecaca; }
 
-    .main { margin-left: 220px; padding: 28px 32px; min-height: 100vh; width: calc(100% - 220px); }
-    .page { display: none; width: 100%; }
-    .page.active { display: block; }
+    .main { margin-left: 220px; padding: 28px 24px 28px 24px; min-height: 100vh; width: calc(100% - 220px); display: flex; flex-direction: column; }
+    .page { display: none; width: 100%; flex-direction: column; flex: 1; }
+    .page.active { display: flex; }
     .page-title { font-size: 1.4rem; font-weight: 700; color: #1c1917; margin-bottom: 24px; }
 
     /* Cards */
     .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #e7e5e4; width: 100%; }
+    .card-fill { flex: 1; display: flex; flex-direction: column; margin-bottom: 0; }
+    .card-fill .pagination { margin-top: auto; }
     .card h3 { font-size: 1rem; font-weight: 600; color: #1c1917; margin-bottom: 16px; }
 
     /* Stats */
@@ -185,16 +187,16 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>\u652f\u6301\u7684\u6a21\u578b</h3>
         <div class="model-tags" id="model-tags"></div>
       </div>
-      <div class="card">
+      <div class="card card-fill">
         <h3>\u6700\u8fd1\u6dfb\u52a0\u7684\u8d26\u53f7</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" style="flex:1">
           <table>
             <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u72b6\u6001</th></tr></thead>
             <tbody id="recent-list"></tbody>
           </table>
           <div id="recent-empty" class="empty-state hidden">\u6682\u65e0\u8d26\u53f7</div>
         </div>
-        <div id="recent-pagination" class="pagination hidden"></div>
+        <div id="recent-pagination" class="pagination"></div>
       </div>
     </div>
 
@@ -218,16 +220,16 @@ export function getAdminHTML(baseUrl: string): string {
           <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="bulkAdd()">\u6279\u91cf\u6dfb\u52a0</button>
         </div>
       </div>
-      <div class="card">
+      <div class="card card-fill">
         <h3>Token \u5217\u8868</h3>
-        <div class="table-wrap">
+        <div class="table-wrap" style="flex:1">
           <table>
             <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u72b6\u6001</th><th>\u64cd\u4f5c</th></tr></thead>
             <tbody id="token-list"></tbody>
           </table>
           <div id="list-empty" class="empty-state hidden">\u8fd8\u6ca1\u6709 Token</div>
         </div>
-        <div id="token-pagination" class="pagination hidden"></div>
+        <div id="token-pagination" class="pagination"></div>
       </div>
     </div>
 
@@ -367,7 +369,7 @@ async function api(method, path, body) {
 function renderPagination(containerId, total, currentPage, onPageChange) {
   const container = document.getElementById(containerId);
   const totalPages = Math.ceil(total / PAGE_SIZE);
-  if (totalPages <= 1) { container.classList.add('hidden'); return; }
+
   container.classList.remove('hidden');
   const start = (currentPage - 1) * PAGE_SIZE + 1;
   const end = Math.min(currentPage * PAGE_SIZE, total);
@@ -483,7 +485,7 @@ function renderRecent() {
   const tbody = document.getElementById('recent-list');
   const empty = document.getElementById('recent-empty');
   const sorted = allTokens.slice().sort((a, b) => b.addedAt - a.addedAt);
-  if (sorted.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); document.getElementById('recent-pagination').classList.add('hidden'); return; }
+  if (sorted.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); renderPagination('recent-pagination', 0, 1, 'goRecentPage'); return; }
   empty.classList.add('hidden');
   const start = (recentPage - 1) * PAGE_SIZE;
   const page = sorted.slice(start, start + PAGE_SIZE);
@@ -509,7 +511,7 @@ function goTokenPage(p) {
 function renderTokenList() {
   const tbody = document.getElementById('token-list');
   const empty = document.getElementById('list-empty');
-  if (allTokens.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); document.getElementById('token-pagination').classList.add('hidden'); return; }
+  if (allTokens.length === 0) { tbody.innerHTML = ''; empty.classList.remove('hidden'); renderPagination('token-pagination', 0, 1, 'goTokenPage'); return; }
   empty.classList.add('hidden');
   const start = (tokenPage - 1) * PAGE_SIZE;
   const page = allTokens.slice(start, start + PAGE_SIZE);
