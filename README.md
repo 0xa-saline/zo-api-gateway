@@ -68,7 +68,6 @@
 1. 在 Cloudflare Dashboard 左侧 → **Workers 和 Pages** → **KV**
 2. 点击 **创建命名空间**，名称填 `zo-gateway-tokens`
 3. 创建后复制 **命名空间 ID**
-4. 打开你 Fork 的仓库中的 `wrangler.toml`，把 `id = "YOUR_KV_NAMESPACE_ID"` 替换为你的命名空间 ID
 
 ### 第 5 步：配置 GitHub Secrets
 
@@ -78,6 +77,7 @@
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 |
 | `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID |
+| `KV_NAMESPACE_ID` | 第 4 步获取的 KV 命名空间 ID |
 
 ### 第 6 步：配置 Gateway Key
 
