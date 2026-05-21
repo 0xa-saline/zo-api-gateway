@@ -3,6 +3,7 @@ import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings } from './token-store';
 import { getLogs, addLog } from './call-log';
+import { FAVICON_BASE64 } from './favicon';
 import type { AnthropicRequest, OpenAIChatRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
 
@@ -109,6 +110,12 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+
+    // Favicon
+    if (url.pathname === '/favicon.ico' && request.method === 'GET') {
+      const buf = Uint8Array.from(atob(FAVICON_BASE64), (c) => c.charCodeAt(0));
+      return new Response(buf, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800', ...corsHeaders() } });
     }
 
     // Admin panel
