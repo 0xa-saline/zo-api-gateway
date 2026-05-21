@@ -73,23 +73,16 @@
 
 进入你 Fork 的仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，依次添加：
 
-| Secret 名称 | 值 |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 |
-| `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID |
-| `KV_NAMESPACE_ID` | 第 4 步获取的 KV 命名空间 ID |
-
-### 第 6 步：配置 Gateway Key
-
-部署成功后，在 Cloudflare Dashboard → **Workers 和 Pages** → 点击 `zo-api-gateway` → **设置** → **变量和机密**，添加：
-
-| 变量名 | 类型 | 值 |
+| Secret 名称 | 值 | 说明 |
 |---|---|---|
-| `GATEWAY_KEY` | 加密 | 你自定义的统一 Key，比如 `sk-my-key-xxx` |
+| `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 | Cloudflare 部署凭证 |
+| `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID | Cloudflare 账户标识 |
+| `KV_NAMESPACE_ID` | 第 4 步获取的 KV 命名空间 ID | Token 数据存储 |
+| `GATEWAY_KEY` | 你自定义的统一 Key，比如 `sk-my-key-xxx` | 客户端 API 密钥 + 管理面板登录密码 |
 
-这个 Key 既是客户端调用 API 的密钥，也是管理面板的登录密码。
+所有配置都在 GitHub Secrets 里完成，不需要去 Cloudflare Dashboard 手动设置任何变量。
 
-### 第 7 步：触发部署
+### 第 6 步：触发部署
 
 随便改一下代码（比如编辑 README），push 到 main 分支，GitHub Actions 会自动部署。
 
