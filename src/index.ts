@@ -1,6 +1,14 @@
 import { forwardNonStreaming, buildStreamingResponse } from './converter';
 import { getLandingHTML } from './landing';
+import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import type { AnthropicRequest } from './types';
+import type { KeyPoolConfig } from './key-pool';
+
+interface Env {
+  GATEWAY_KEY?: string;
+  ZO_TOKENS?: string;
+  COOLDOWN_MS?: string;
+}
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -11,7 +19,7 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
-function extractToken(request: Request): string | null {
+function extractClientKey(request: Request): string | null {
   const authHeader = request.headers.get('authorization');
   if (authHeader?.startsWith('Bearer ')) {
     return authHeader.slice(7);
@@ -21,74 +29,124 @@ function extractToken(request: Request): string | null {
   return null;
 }
 
-function errorResponse(status: number, message: string): Response {
+function errorResponse(status: number, type: string, message: string): Response {
   return new Response(
-    JSON.stringify({
-      type: 'error',
-      error: { type: 'authentication_error', message },
-    }),
-    {
-      status,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-    },
+    JSON.stringify({ type: 'error', error: { type, message } }),
+    { status, headers: { 'Content-Type': 'application/json', ...corsHeaders() } },
   );
 }
 
+function parseTokens(raw: string): string[] {
+  return raw.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+function isMultiKeyMode(env: Env): boolean {
+  return !!(env.GATEWAY_KEY && env.ZO_TOKENS);
+}
+
+function resolveToken(clientKey: string, env: Env, poolConfig: KeyPoolConfig | null): string | null {
+  if (!isMultiKeyMode(env) || !poolConfig) {
+    return clientKey;
+  }
+  if (clientKey !== env.GATEWAY_KEY) {
+    return null;
+  }
+  return pickToken(poolConfig);
+}
+
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+
+    const multiKey = isMultiKeyMode(env);
+    let poolConfig: KeyPoolConfig | null = null;
+    if (multiKey) {
+      poolConfig = {
+        tokens: parseTokens(env.ZO_TOKENS!),
+        cooldownMs: parseInt(env.COOLDOWN_MS || '60000', 10),
+      };
     }
 
     // Landing page
     if (url.pathname === '/' && request.method === 'GET') {
       const baseUrl = `${url.protocol}//${url.host}`;
-      return new Response(getLandingHTML(baseUrl), {
+      const poolStatus = poolConfig ? getPoolStatus(poolConfig) : null;
+      return new Response(getLandingHTML(baseUrl, multiKey, poolStatus), {
         headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
       });
     }
 
     // Messages endpoint
     if (url.pathname === '/v1/messages' && request.method === 'POST') {
-      const token = extractToken(request);
-      if (!token) {
-        return errorResponse(401, 'Missing API key. Pass it via Authorization: Bearer <token> or x-api-key header.');
+      const clientKey = extractClientKey(request);
+      if (!clientKey) {
+        return errorResponse(401, 'authentication_error',
+          'Missing API key. Pass it via Authorization: Bearer <token> or x-api-key header.');
+      }
+
+      const zoToken = resolveToken(clientKey, env, poolConfig);
+      if (!zoToken) {
+        return errorResponse(401, 'authentication_error', 'Invalid API key.');
       }
 
       let body: AnthropicRequest;
       try {
         body = (await request.json()) as AnthropicRequest;
       } catch {
-        return errorResponse(400, 'Invalid JSON body.');
+        return errorResponse(400, 'invalid_request_error', 'Invalid JSON body.');
       }
 
       if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-        return errorResponse(400, 'messages is required and must be a non-empty array.');
+        return errorResponse(400, 'invalid_request_error', 'messages is required and must be a non-empty array.');
       }
       if (!body.model) {
-        return errorResponse(400, 'model is required.');
+        return errorResponse(400, 'invalid_request_error', 'model is required.');
       }
 
-      try {
-        if (body.stream) {
-          return buildStreamingResponse(body, token);
+      const maxRetries = poolConfig ? poolConfig.tokens.length : 1;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const token = attempt === 0 ? zoToken : pickToken(poolConfig!);
+        if (!token) {
+          return errorResponse(503, 'api_error', 'All upstream tokens are unavailable.');
         }
 
-        const result = await forwardNonStreaming(body, token);
-        return new Response(JSON.stringify(result), {
-          headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-        });
-      } catch (err) {
-        const message = (err as Error).message || 'Internal server error';
-        const status = message.includes('401') ? 401 : message.includes('429') ? 429 : 502;
-        return errorResponse(status, message);
+        try {
+          if (body.stream) {
+            const resp = buildStreamingResponse(body, token);
+            markSuccess(token);
+            return resp;
+          }
+
+          const result = await forwardNonStreaming(body, token);
+          markSuccess(token);
+          return new Response(JSON.stringify(result), {
+            headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+          });
+        } catch (err) {
+          const message = (err as Error).message || 'Internal server error';
+          const isRetryable = message.includes('429') || message.includes('401') || message.includes('403');
+
+          if (isRetryable && poolConfig) {
+            markFailed(token);
+            continue;
+          }
+
+          const status = message.includes('401') ? 401
+            : message.includes('429') ? 429
+            : message.includes('403') ? 403
+            : 502;
+          return errorResponse(status, 'api_error', message);
+        }
       }
+
+      return errorResponse(503, 'api_error', 'All upstream tokens exhausted after retries.');
     }
 
-    // 404 for everything else
     return new Response(JSON.stringify({ error: 'Not found' }), {
       status: 404,
       headers: { 'Content-Type': 'application/json', ...corsHeaders() },
