@@ -234,22 +234,31 @@ export function buildStreamingResponse(
 
 // OpenAI Chat Completions support
 
+function resolveOpenAIModel(model: string): string {
+  // Strip zo: prefix: zo:anthropic/claude-opus-4-7 → anthropic/claude-opus-4-7
+  if (model.startsWith('zo:')) {
+    model = model.slice(3);
+  }
+  // Convert slash to colon: anthropic/claude-opus-4-7 → anthropic:claude-opus-4-7
+  if (model.includes('/')) {
+    model = model.replace('/', ':');
+  }
+  // Bare model name without provider: claude-opus-4-7 → anthropic:claude-opus-4-7
+  if (!model.includes(':')) {
+    model = `anthropic:${model}`;
+  }
+  return model;
+}
+
 function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
   const parts: string[] = [];
   for (const msg of req.messages) {
     const role = msg.role === 'user' ? 'Human' : msg.role === 'system' ? 'System' : 'Assistant';
     parts.push(`[${role}]\n${msg.content}`);
   }
-  let modelName = req.model;
-  if (!modelName.includes(':') && !modelName.startsWith('zo:')) {
-    modelName = `anthropic:${modelName}`;
-  }
-  if (modelName.startsWith('zo:')) {
-    modelName = modelName.slice(3);
-  }
   return {
     input: parts.join('\n\n'),
-    model_name: modelName,
+    model_name: resolveOpenAIModel(req.model),
     stream: req.stream ?? false,
   };
 }
