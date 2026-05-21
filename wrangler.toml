@@ -5,7 +5,10 @@ compatibility_date = "2025-01-01"
 [observability]
 enabled = true
 
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
 # [vars]
 # GATEWAY_KEY = "your-unified-api-key"
-# ZO_TOKENS = "zo_sk_token1,zo_sk_token2,zo_sk_token3"
 # COOLDOWN_MS = "60000"

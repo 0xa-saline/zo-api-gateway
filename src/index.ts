@@ -1,10 +1,13 @@
 import { forwardNonStreaming, buildStreamingResponse } from './converter';
 import { getLandingHTML } from './landing';
+import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
+import { getTokens, addToken, removeToken, toggleToken, getEnabledTokenStrings } from './token-store';
 import type { AnthropicRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
 
 interface Env {
+  KV: KVNamespace;
   GATEWAY_KEY?: string;
   ZO_TOKENS?: string;
   COOLDOWN_MS?: string;
@@ -14,7 +17,7 @@ function corsHeaders(): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'content-type, authorization, x-api-key, anthropic-version',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Expose-Headers': 'content-type',
   };
 }
@@ -36,22 +39,47 @@ function errorResponse(status: number, type: string, message: string): Response 
   );
 }
 
-function parseTokens(raw: string): string[] {
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+  });
+}
+
+function parseEnvTokens(raw: string): string[] {
   return raw.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
-function isMultiKeyMode(env: Env): boolean {
-  return !!(env.GATEWAY_KEY && env.ZO_TOKENS);
+async function buildPoolConfig(env: Env): Promise<KeyPoolConfig | null> {
+  const cooldownMs = parseInt(env.COOLDOWN_MS || '60000', 10);
+
+  // KV tokens take priority
+  if (env.KV) {
+    const kvTokens = await getEnabledTokenStrings(env.KV);
+    if (kvTokens.length > 0) {
+      return { tokens: kvTokens, cooldownMs };
+    }
+  }
+
+  // Fall back to env var
+  if (env.ZO_TOKENS) {
+    const envTokens = parseEnvTokens(env.ZO_TOKENS);
+    if (envTokens.length > 0) {
+      return { tokens: envTokens, cooldownMs };
+    }
+  }
+
+  return null;
 }
 
-function resolveToken(clientKey: string, env: Env, poolConfig: KeyPoolConfig | null): string | null {
-  if (!isMultiKeyMode(env) || !poolConfig) {
-    return clientKey;
-  }
-  if (clientKey !== env.GATEWAY_KEY) {
-    return null;
-  }
-  return pickToken(poolConfig);
+function isGatewayMode(env: Env): boolean {
+  return !!env.GATEWAY_KEY;
+}
+
+function verifyAdmin(request: Request, env: Env): boolean {
+  if (!env.GATEWAY_KEY) return false;
+  const key = extractClientKey(request);
+  return key === env.GATEWAY_KEY;
 }
 
 export default {
@@ -62,20 +90,68 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    const multiKey = isMultiKeyMode(env);
-    let poolConfig: KeyPoolConfig | null = null;
-    if (multiKey) {
-      poolConfig = {
-        tokens: parseTokens(env.ZO_TOKENS!),
-        cooldownMs: parseInt(env.COOLDOWN_MS || '60000', 10),
-      };
+    // Admin panel page
+    if (url.pathname === '/admin' && request.method === 'GET') {
+      const baseUrl = `${url.protocol}//${url.host}`;
+      return new Response(getAdminHTML(baseUrl), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
+      });
+    }
+
+    // Admin API routes
+    if (url.pathname === '/admin/tokens') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      if (request.method === 'GET') {
+        const tokens = await getTokens(env.KV);
+        const poolConfig = await buildPoolConfig(env);
+        const poolStatus = poolConfig ? getPoolStatus(poolConfig) : { total: 0, available: 0 };
+        const safeTokens = tokens.map((t) => ({
+          token: t.token,
+          label: t.label,
+          addedAt: t.addedAt,
+          enabled: t.enabled,
+        }));
+        return jsonResponse({ tokens: safeTokens, pool_status: poolStatus });
+      }
+
+      if (request.method === 'POST') {
+        const body = (await request.json()) as { token: string; label: string };
+        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+        try {
+          const tokens = await addToken(env.KV, body.token, body.label || '未命名');
+          return jsonResponse({ ok: true, count: tokens.length });
+        } catch (e) {
+          return jsonResponse({ error: (e as Error).message }, 400);
+        }
+      }
+
+      if (request.method === 'DELETE') {
+        const body = (await request.json()) as { token: string };
+        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+        const tokens = await removeToken(env.KV, body.token);
+        return jsonResponse({ ok: true, count: tokens.length });
+      }
+
+      if (request.method === 'PATCH') {
+        const body = (await request.json()) as { token: string; enabled: boolean };
+        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+        const tokens = await toggleToken(env.KV, body.token, body.enabled);
+        return jsonResponse({ ok: true, count: tokens.length });
+      }
+
+      return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
     // Landing page
     if (url.pathname === '/' && request.method === 'GET') {
       const baseUrl = `${url.protocol}//${url.host}`;
+      const poolConfig = await buildPoolConfig(env);
+      const gatewayMode = isGatewayMode(env);
       const poolStatus = poolConfig ? getPoolStatus(poolConfig) : null;
-      return new Response(getLandingHTML(baseUrl, multiKey, poolStatus), {
+      return new Response(getLandingHTML(baseUrl, gatewayMode, poolStatus), {
         headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
       });
     }
@@ -88,9 +164,21 @@ export default {
           'Missing API key. Pass it via Authorization: Bearer <token> or x-api-key header.');
       }
 
-      const zoToken = resolveToken(clientKey, env, poolConfig);
+      const poolConfig = await buildPoolConfig(env);
+      const gatewayMode = isGatewayMode(env);
+
+      let zoToken: string | null;
+      if (gatewayMode && poolConfig) {
+        if (clientKey !== env.GATEWAY_KEY) {
+          return errorResponse(401, 'authentication_error', 'Invalid API key.');
+        }
+        zoToken = pickToken(poolConfig);
+      } else {
+        zoToken = clientKey;
+      }
+
       if (!zoToken) {
-        return errorResponse(401, 'authentication_error', 'Invalid API key.');
+        return errorResponse(503, 'api_error', 'No upstream tokens available.');
       }
 
       let body: AnthropicRequest;

@@ -143,6 +143,12 @@ export function getLandingHTML(
       <p>${authNote}</p>
     </div>
 
+    ${multiKeyMode ? `
+    <div class="card" style="text-align:center">
+      <p><a href="${baseUrl}/admin" style="color:#7c9eff;font-weight:600;font-size:1.1rem;">进入号池管理面板 →</a></p>
+      <p style="color:#666;font-size:0.85rem;">管理员可在面板中添加/删除/启停 Zo Token</p>
+    </div>` : ''}
+
     <div class="footer">
       Zo Computer API Gateway · Powered by Cloudflare Workers
     </div>
