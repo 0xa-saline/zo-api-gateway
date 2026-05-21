@@ -144,6 +144,8 @@ export default {
         const safeTokens = tokens.map((t) => ({
           token: t.token,
           label: t.label,
+          email: t.email || '',
+          spaceName: t.spaceName || '',
           addedAt: t.addedAt,
           enabled: t.enabled,
         }));
@@ -151,10 +153,10 @@ export default {
       }
 
       if (request.method === 'POST') {
-        const body = (await request.json()) as { token: string; label: string };
+        const body = (await request.json()) as { token: string; label: string; email?: string; spaceName?: string };
         if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
         try {
-          const tokens = await addToken(env.KV, body.token, body.label || '未命名');
+          const tokens = await addToken(env.KV, body.token, body.label || '未命名', body.email, body.spaceName);
           return jsonResponse({ ok: true, count: tokens.length });
         } catch (e) {
           return jsonResponse({ error: (e as Error).message }, 400);
