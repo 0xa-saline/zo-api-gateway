@@ -101,7 +101,7 @@ export function getAdminHTML(baseUrl: string): string {
     .empty-state { text-align: center; color: #a8a29e; padding: 48px; font-size: 0.9rem; }
 
     /* Add form */
-    .add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
+    .add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
     .add-grid .input-group { margin-bottom: 0; }
 
     /* Info */
@@ -116,6 +116,12 @@ export function getAdminHTML(baseUrl: string): string {
     .bulk-box { margin-top: 12px; }
     .bulk-hint { color: #a8a29e; font-size: 0.8rem; margin-top: 4px; }
     .hidden { display: none !important; }
+
+    /* Modal */
+    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 100; display: flex; align-items: center; justify-content: center; }
+    .modal { background: #fff; border-radius: 16px; padding: 28px; width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
+    .modal h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 
     /* Toast */
     .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 10px; font-size: 0.9rem; z-index: 1000; animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
@@ -173,7 +179,7 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>最近添加的账号</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>备注</th><th>邮箱</th><th>Space</th><th>添加时间</th><th>状态</th></tr></thead>
+            <thead><tr><th>邮箱</th><th>Space</th><th>添加时间</th><th>状态</th></tr></thead>
             <tbody id="recent-list"></tbody>
           </table>
           <div id="recent-empty" class="empty-state hidden">暂无账号</div>
@@ -189,7 +195,6 @@ export function getAdminHTML(baseUrl: string): string {
         <div class="add-grid">
           <div class="input-group"><label>邮箱</label><input type="text" id="add-email" placeholder="user@example.com"></div>
           <div class="input-group"><label>Space 名称</label><input type="text" id="add-space" placeholder="dandyseal"></div>
-          <div class="input-group"><label>备注</label><input type="text" id="add-label" placeholder="账号1"></div>
           <div class="input-group"><label>Zo Access Token</label><input type="text" id="add-token" placeholder="zo_sk_..."></div>
           <button class="btn btn-primary" onclick="addToken()">添加</button>
         </div>
@@ -206,7 +211,7 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>Token 列表</h3>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>邮箱</th><th>Space</th><th>备注</th><th>Token</th><th>添加时间</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th>邮箱</th><th>Space</th><th>Token</th><th>添加时间</th><th>状态</th><th>操作</th></tr></thead>
             <tbody id="token-list"></tbody>
           </table>
           <div id="list-empty" class="empty-state hidden">还没有 Token</div>
@@ -275,11 +280,30 @@ claude</div>
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
     "token": "zo_sk_xxx",
-    "label": "账号1",
     "email": "user@example.com",
     "spaceName": "dandyseal"
   }'</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="edit-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>编辑账号信息</h3>
+    <input type="hidden" id="edit-token-id">
+    <div class="input-group">
+      <label>邮箱</label>
+      <input type="text" id="edit-email" placeholder="user@example.com">
+    </div>
+    <div class="input-group">
+      <label>Space 名称</label>
+      <input type="text" id="edit-space" placeholder="dandyseal">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeEditModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveEdit()">保存</button>
     </div>
   </div>
 </div>
@@ -324,7 +348,7 @@ async function api(method, path, body) {
   return data;
 }
 
-// Auto login from localStorage
+// Auto login
 (function tryAutoLogin() {
   const saved = localStorage.getItem('zo_gw_key');
   if (saved) {
@@ -416,7 +440,6 @@ function renderRecent(tokens) {
   tbody.innerHTML = sorted.map(t => {
     const st = t.enabled ? '<span class="badge badge-on">启用</span>' : '<span class="badge badge-off">禁用</span>';
     return \`<tr>
-      <td>\${t.label}</td>
       <td class="token-mono">\${t.email || '-'}</td>
       <td>\${t.spaceName || '-'}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
@@ -438,11 +461,14 @@ function renderTokenList(tokens) {
     return \`<tr>
       <td class="token-mono">\${t.email || '-'}</td>
       <td>\${t.spaceName || '-'}</td>
-      <td>\${t.label}</td>
       <td class="token-mono">\${mask(t.token)}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
-      <td><div class="actions-cell">\${tBtn}<button class="btn btn-danger btn-sm" onclick="removeTk('\${t.token}')">删除</button></div></td>
+      <td><div class="actions-cell">
+        <button class="btn btn-outline btn-sm" onclick="openEdit('\${t.token}','\${(t.email||'').replace(/'/g,"\\\\'")}','\${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
+        \${tBtn}
+        <button class="btn btn-danger btn-sm" onclick="removeTk('\${t.token}')">删除</button>
+      </div></td>
     </tr>\`;
   }).join('');
 }
@@ -450,14 +476,12 @@ function renderTokenList(tokens) {
 async function addToken() {
   const email = document.getElementById('add-email').value.trim();
   const spaceName = document.getElementById('add-space').value.trim();
-  const label = document.getElementById('add-label').value.trim() || '未命名';
   const token = document.getElementById('add-token').value.trim();
   if (!token) return toast('请输入 Token', false);
   try {
-    await api('POST', '/admin/tokens', { token, label, email: email || undefined, spaceName: spaceName || undefined });
+    await api('POST', '/admin/tokens', { token, email: email || undefined, spaceName: spaceName || undefined });
     document.getElementById('add-email').value = '';
     document.getElementById('add-space').value = '';
-    document.getElementById('add-label').value = '';
     document.getElementById('add-token').value = '';
     toast('添加成功');
     loadTokens();
@@ -473,23 +497,47 @@ async function bulkAdd() {
   let ok = 0, fail = 0;
   for (const line of lines) {
     const parts = line.split(',').map(s => s.trim());
-    let email = '', spaceName = '', token = '', label = '';
+    let email = '', spaceName = '', token = '';
     if (parts.length >= 3) {
-      email = parts[0]; spaceName = parts[1]; token = parts[2]; label = email || 'Token-' + (ok + 1);
+      email = parts[0]; spaceName = parts[1]; token = parts[2];
     } else if (parts.length === 2) {
-      email = parts[0]; token = parts[1]; label = email || 'Token-' + (ok + 1);
+      email = parts[0]; token = parts[1];
     } else {
-      token = parts[0]; label = 'Token-' + (ok + 1);
+      token = parts[0];
     }
     if (!token) { fail++; continue; }
     try {
-      await api('POST', '/admin/tokens', { token, label, email: email || undefined, spaceName: spaceName || undefined });
+      await api('POST', '/admin/tokens', { token, email: email || undefined, spaceName: spaceName || undefined });
       ok++;
     } catch { fail++; }
   }
   document.getElementById('bulk-tokens').value = '';
   toast(\`导入完成：\${ok} 成功\${fail > 0 ? '，' + fail + ' 失败' : ''}\`);
   loadTokens();
+}
+
+// Edit modal
+function openEdit(token, email, spaceName) {
+  document.getElementById('edit-token-id').value = token;
+  document.getElementById('edit-email').value = email;
+  document.getElementById('edit-space').value = spaceName;
+  document.getElementById('edit-modal').classList.remove('hidden');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.add('hidden');
+}
+
+async function saveEdit() {
+  const token = document.getElementById('edit-token-id').value;
+  const email = document.getElementById('edit-email').value.trim();
+  const spaceName = document.getElementById('edit-space').value.trim();
+  try {
+    await api('PATCH', '/admin/tokens', { token, email, spaceName });
+    toast('保存成功');
+    closeEditModal();
+    loadTokens();
+  } catch (e) { toast(e.message, false); }
 }
 
 async function removeTk(token) {

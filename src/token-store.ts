@@ -13,7 +13,19 @@ export async function getTokens(kv: KVNamespace): Promise<StoredToken[]> {
   const raw = await kv.get(KV_KEY);
   if (!raw) return [];
   try {
-    return JSON.parse(raw) as StoredToken[];
+    const tokens = JSON.parse(raw) as StoredToken[];
+    let migrated = false;
+    for (const t of tokens) {
+      if (!t.email && t.label && t.label.includes('@')) {
+        t.email = t.label;
+        t.label = '';
+        migrated = true;
+      }
+    }
+    if (migrated) {
+      await kv.put(KV_KEY, JSON.stringify(tokens));
+    }
+    return tokens;
   } catch {
     return [];
   }
@@ -22,14 +34,13 @@ export async function getTokens(kv: KVNamespace): Promise<StoredToken[]> {
 export async function addToken(
   kv: KVNamespace,
   token: string,
-  label: string,
   email?: string,
   spaceName?: string,
 ): Promise<StoredToken[]> {
   const tokens = await getTokens(kv);
   const exists = tokens.some((t) => t.token === token);
   if (exists) throw new Error('Token already exists');
-  const entry: StoredToken = { token, label, addedAt: Date.now(), enabled: true };
+  const entry: StoredToken = { token, label: '', addedAt: Date.now(), enabled: true };
   if (email) entry.email = email;
   if (spaceName) entry.spaceName = spaceName;
   tokens.push(entry);
@@ -48,6 +59,20 @@ export async function toggleToken(kv: KVNamespace, token: string, enabled: boole
   const tokens = await getTokens(kv);
   const t = tokens.find((t) => t.token === token);
   if (t) t.enabled = enabled;
+  await kv.put(KV_KEY, JSON.stringify(tokens));
+  return tokens;
+}
+
+export async function updateToken(
+  kv: KVNamespace,
+  token: string,
+  updates: { email?: string; spaceName?: string },
+): Promise<StoredToken[]> {
+  const tokens = await getTokens(kv);
+  const t = tokens.find((t) => t.token === token);
+  if (!t) throw new Error('Token not found');
+  if (updates.email !== undefined) t.email = updates.email;
+  if (updates.spaceName !== undefined) t.spaceName = updates.spaceName;
   await kv.put(KV_KEY, JSON.stringify(tokens));
   return tokens;
 }
