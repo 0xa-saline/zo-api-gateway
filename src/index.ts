@@ -1,5 +1,4 @@
 import { forwardNonStreaming, buildStreamingResponse } from './converter';
-import { getLandingHTML } from './landing';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, getEnabledTokenStrings } from './token-store';
@@ -90,8 +89,8 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // Admin panel page
-    if (url.pathname === '/admin' && request.method === 'GET') {
+    // Admin panel - serve on both / and /admin
+    if ((url.pathname === '/' || url.pathname === '/admin') && request.method === 'GET') {
       const baseUrl = `${url.protocol}//${url.host}`;
       return new Response(getAdminHTML(baseUrl), {
         headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
@@ -145,16 +144,7 @@ export default {
       return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
-    // Landing page
-    if (url.pathname === '/' && request.method === 'GET') {
-      const baseUrl = `${url.protocol}//${url.host}`;
-      const poolConfig = await buildPoolConfig(env);
-      const gatewayMode = isGatewayMode(env);
-      const poolStatus = poolConfig ? getPoolStatus(poolConfig) : null;
-      return new Response(getLandingHTML(baseUrl, gatewayMode, poolStatus), {
-        headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
-      });
-    }
+
 
     // Messages endpoint
     if (url.pathname === '/v1/messages' && request.method === 'POST') {
