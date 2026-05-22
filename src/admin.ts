@@ -44,7 +44,7 @@ export function getAdminHTML(baseUrl: string): string {
     .card h3 { font-size: 1rem; font-weight: 600; color: #1c1917; margin-bottom: 16px; }
 
     /* Stats */
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; width: 100%; }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 24px; width: 100%; }
     .stat-card { background: #fff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 20px; }
     .stat-card .label { font-size: 0.8rem; color: #a8a29e; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
     .stat-card .value { font-size: 2rem; font-weight: 700; margin-top: 4px; }
@@ -100,6 +100,16 @@ export function getAdminHTML(baseUrl: string): string {
     .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
     .badge-on { background: #dcfce7; color: #16a34a; }
     .badge-off { background: #fee2e2; color: #dc2626; }
+    .badge-valid { background: #dcfce7; color: #16a34a; }
+    .badge-invalid { background: #fee2e2; color: #dc2626; }
+    .badge-unchecked { background: #f5f5f4; color: #a8a29e; }
+    .quota-text { font-size: 0.8rem; color: #78716c; font-family: 'SF Mono', Monaco, monospace; }
+    .quota-na { color: #a8a29e; font-size: 0.8rem; }
+    .disable-reason { font-size: 0.7rem; color: #a8a29e; margin-top: 2px; }
+    .btn-warn { background: #f59e0b; color: #fff; }
+    .check-actions { display: flex; gap: 8px; margin-bottom: 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinning { display: inline-block; animation: spin 1s linear infinite; }
     .actions-cell { display: flex; gap: 6px; }
     .empty-state { text-align: center; color: #a8a29e; padding: 48px; font-size: 0.9rem; }
 
@@ -181,6 +191,7 @@ export function getAdminHTML(baseUrl: string): string {
         <div class="stat-card"><div class="label">\u603b\u8ba1 Token</div><div class="value blue" id="s-total">0</div></div>
         <div class="stat-card"><div class="label">\u53ef\u7528</div><div class="value green" id="s-available">0</div></div>
         <div class="stat-card"><div class="label">\u5df2\u7981\u7528</div><div class="value red" id="s-disabled">0</div></div>
+        <div class="stat-card"><div class="label">\u5df2\u9a8c\u8bc1\u6709\u6548</div><div class="value green" id="s-valid">0</div></div>
         <div class="stat-card"><div class="label">\u652f\u6301\u6a21\u578b</div><div class="value purple" id="s-models">11</div></div>
       </div>
       <div class="card">
@@ -204,6 +215,14 @@ export function getAdminHTML(baseUrl: string): string {
     <div class="page" id="page-tokens">
       <div class="page-title">\u53f7\u6c60\u7ba1\u7406</div>
       <div class="card">
+        <h3>\u72b6\u6001\u68c0\u6d4b</h3>
+        <div class="check-actions">
+          <button class="btn btn-primary" id="btn-check-all" onclick="checkAllTokens()">\u26a1 \u4e00\u952e\u68c0\u6d4b\u72b6\u6001</button>
+          <button class="btn btn-warn" id="btn-check-quota" onclick="checkAllQuota()">\ud83d\udcca \u68c0\u6d4b\u989d\u5ea6</button>
+          <span id="check-progress" style="font-size:0.85rem;color:#78716c;align-self:center"></span>
+        </div>
+      </div>
+      <div class="card">
         <h3>\u6dfb\u52a0 Token</h3>
         <div class="add-grid">
           <div class="input-group"><label>\u90ae\u7bb1</label><input type="text" id="add-email" placeholder="user@example.com"></div>
@@ -224,7 +243,7 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>Token \u5217\u8868</h3>
         <div class="table-wrap" style="flex:1">
           <table>
-            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u72b6\u6001</th><th>\u64cd\u4f5c</th></tr></thead>
+            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u542f\u7528</th><th>\u6709\u6548\u6027</th><th>\u989d\u5ea6</th><th>\u64cd\u4f5c</th></tr></thead>
             <tbody id="token-list"></tbody>
           </table>
           <div id="list-empty" class="empty-state hidden">\u8fd8\u6ca1\u6709 Token</div>
@@ -460,9 +479,11 @@ async function loadTokens() {
 function renderStats(tokens, pool) {
   const enabled = tokens.filter(t => t.enabled).length;
   const disabled = tokens.length - enabled;
+  const valid = tokens.filter(t => t.status === 'valid').length;
   document.getElementById('s-total').textContent = tokens.length;
   document.getElementById('s-available').textContent = pool.available;
   document.getElementById('s-disabled').textContent = disabled;
+  document.getElementById('s-valid').textContent = valid;
   document.getElementById('s-models').textContent = ZO_MODELS.length;
 }
 
@@ -508,6 +529,28 @@ function goTokenPage(p) {
   renderTokenList();
 }
 
+function statusBadge(t) {
+  if (t.status === 'valid') return '<span class="badge badge-valid">\u6709\u6548</span>';
+  if (t.status === 'invalid') return '<span class="badge badge-invalid">\u5931\u6548</span>' + (t.disableReason ? '<div class="disable-reason">' + t.disableReason + '</div>' : '');
+  return '<span class="badge badge-unchecked">\u672a\u68c0\u6d4b</span>';
+}
+
+function quotaDisplay(t) {
+  if (!t.quotaInfo || !t.quotaInfo.available) return '<span class="quota-na">-</span>';
+  const q = t.quotaInfo;
+  const parts = [];
+  if (q.remaining !== undefined && q.remaining !== null) parts.push('\u5269\u4f59: ' + q.remaining);
+  else if (q.used !== undefined && q.used !== null && q.limit !== undefined && q.limit !== null) parts.push(q.used + ' / ' + q.limit);
+  else if (q.used !== undefined && q.used !== null) parts.push('\u5df2\u7528: ' + q.used);
+  if (q.plan) parts.push(q.plan);
+  return parts.length > 0 ? '<span class="quota-text">' + parts.join(' | ') + '</span>' : '<span class="quota-na">-</span>';
+}
+
+function lastCheckedText(t) {
+  if (!t.lastChecked) return '';
+  return '<div style="font-size:0.7rem;color:#a8a29e;margin-top:2px">' + new Date(t.lastChecked).toLocaleString('zh-CN') + '</div>';
+}
+
 function renderTokenList() {
   const tbody = document.getElementById('token-list');
   const empty = document.getElementById('list-empty');
@@ -526,8 +569,11 @@ function renderTokenList() {
       <td class="token-mono">\${mask(t.token)}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
+      <td>\${statusBadge(t)}\${lastCheckedText(t)}</td>
+      <td>\${quotaDisplay(t)}</td>
       <td><div class="actions-cell">
-        <button class="btn btn-outline btn-sm" onclick="openEdit('\${t.token}','\${(t.email||'').replace(/'/g,"\\\\'")}','\${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
+        <button class="btn btn-outline btn-sm" onclick="openEdit('\${t.token}','\${(t.email||'').replace(/'/g,"\\\\'")}',' \${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
+        <button class="btn btn-outline btn-sm" onclick="checkSingle('\${t.token}')">\u68c0\u6d4b</button>
         \${tBtn}
         <button class="btn btn-danger btn-sm" onclick="removeTk('\${t.token}')">删除</button>
       </div></td>
@@ -612,6 +658,61 @@ async function removeTk(token) {
 async function toggleTk(token, enabled) {
   try { await api('PATCH', '/admin/tokens', { token, enabled }); toast(enabled ? '\u5df2\u542f\u7528' : '\u5df2\u7981\u7528'); loadTokens(); }
   catch (e) { toast(e.message, false); }
+}
+
+async function checkAllTokens() {
+  const btn = document.getElementById('btn-check-all');
+  const progress = document.getElementById('check-progress');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinning">\u26a1</span> \u68c0\u6d4b\u4e2d...';
+  progress.textContent = '\u6b63\u5728\u68c0\u6d4b\u6240\u6709 Token \u72b6\u6001...';
+  try {
+    const data = await api('POST', '/admin/check-tokens');
+    toast('\u68c0\u6d4b\u5b8c\u6210: ' + data.valid + ' \u6709\u6548, ' + data.invalid + ' \u5931\u6548');
+    progress.textContent = '\u4e0a\u6b21\u68c0\u6d4b: ' + new Date().toLocaleString('zh-CN');
+    loadTokens();
+  } catch (e) {
+    toast('\u68c0\u6d4b\u5931\u8d25: ' + e.message, false);
+    progress.textContent = '';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '\u26a1 \u4e00\u952e\u68c0\u6d4b\u72b6\u6001';
+}
+
+async function checkAllQuota() {
+  const btn = document.getElementById('btn-check-quota');
+  const progress = document.getElementById('check-progress');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinning">\ud83d\udcca</span> \u68c0\u6d4b\u4e2d...';
+  progress.textContent = '\u6b63\u5728\u68c0\u6d4b\u989d\u5ea6\u4fe1\u606f...';
+  try {
+    const data = await api('POST', '/admin/check-quota');
+    const withQuota = data.results.filter(r => r.quota && r.quota.available).length;
+    toast('\u989d\u5ea6\u68c0\u6d4b\u5b8c\u6210: ' + withQuota + '/' + data.total + ' \u83b7\u53d6\u6210\u529f');
+    progress.textContent = '\u4e0a\u6b21\u68c0\u6d4b: ' + new Date().toLocaleString('zh-CN');
+    loadTokens();
+  } catch (e) {
+    toast('\u68c0\u6d4b\u5931\u8d25: ' + e.message, false);
+    progress.textContent = '';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '\ud83d\udcca \u68c0\u6d4b\u989d\u5ea6';
+}
+
+async function checkSingle(token) {
+  toast('\u6b63\u5728\u68c0\u6d4b...');
+  try {
+    const data = await api('POST', '/admin/check-token', { token });
+    let msg = data.valid ? '\u6709\u6548' : '\u5931\u6548';
+    if (data.quota) {
+      if (data.quota.remaining !== undefined && data.quota.remaining !== null) msg += ' | \u5269\u4f59: ' + data.quota.remaining;
+      else if (data.quota.used !== undefined && data.quota.used !== null) msg += ' | \u5df2\u7528: ' + data.quota.used;
+    }
+    toast('\u68c0\u6d4b\u7ed3\u679c: ' + msg, data.valid);
+    loadTokens();
+  } catch (e) {
+    toast('\u68c0\u6d4b\u5931\u8d25: ' + e.message, false);
+  }
 }
 </script>
 </body>

@@ -1,8 +1,9 @@
 import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse } from './converter';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
-import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings } from './token-store';
+import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, updateTokenQuota, autoDisableToken } from './token-store';
 import { getLogs, addLog } from './call-log';
+import { checkTokenValidity, checkTokenQuota } from './key-checker';
 import { FAVICON_BASE64 } from './favicon';
 import type { AnthropicRequest, OpenAIChatRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
@@ -154,6 +155,10 @@ export default {
           spaceName: t.spaceName || '',
           addedAt: t.addedAt,
           enabled: t.enabled,
+          lastChecked: t.lastChecked || null,
+          status: t.status || 'unchecked',
+          disableReason: t.disableReason || '',
+          quotaInfo: t.quotaInfo || null,
         }));
         return jsonResponse({ tokens: safeTokens, pool_status: poolStatus });
       }
@@ -195,6 +200,145 @@ export default {
       }
 
       return jsonResponse({ error: 'Method not allowed' }, 405);
+    }
+
+    // Admin API - check tokens (validate and auto-disable)
+    if (url.pathname === '/admin/check-tokens' && request.method === 'POST') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const tokens = await getTokens(env.KV);
+      const results: Array<{
+        token: string;
+        email: string;
+        valid: boolean;
+        httpStatus: number;
+        error?: string;
+        disabled: boolean;
+      }> = [];
+
+      for (const t of tokens) {
+        const check = await checkTokenValidity(t.token);
+        const disabled = !check.valid;
+        if (check.valid) {
+          await updateTokenStatus(env.KV, t.token, 'valid');
+        } else {
+          await updateTokenStatus(env.KV, t.token, 'invalid', `auto-check: HTTP ${check.httpStatus}`);
+        }
+        results.push({
+          token: t.token,
+          email: t.email || '',
+          valid: check.valid,
+          httpStatus: check.httpStatus,
+          error: check.error,
+          disabled,
+        });
+      }
+
+      const invalidCount = results.filter((r) => !r.valid).length;
+      return jsonResponse({
+        ok: true,
+        total: results.length,
+        valid: results.length - invalidCount,
+        invalid: invalidCount,
+        results,
+      });
+    }
+
+    // Admin API - check single token
+    if (url.pathname === '/admin/check-token' && request.method === 'POST') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const body = (await request.json()) as { token: string };
+      if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+
+      const [validity, quota] = await Promise.all([
+        checkTokenValidity(body.token),
+        checkTokenQuota(body.token),
+      ]);
+
+      if (validity.valid) {
+        await updateTokenStatus(env.KV, body.token, 'valid');
+      } else {
+        await updateTokenStatus(env.KV, body.token, 'invalid', `auto-check: HTTP ${validity.httpStatus}`);
+      }
+
+      if (quota.available) {
+        await updateTokenQuota(env.KV, body.token, {
+          available: quota.available,
+          checkedAt: quota.checkedAt,
+          used: quota.used,
+          limit: quota.limit,
+          remaining: quota.remaining,
+          plan: quota.plan,
+          resetAt: quota.resetAt,
+        });
+      }
+
+      return jsonResponse({
+        ok: true,
+        valid: validity.valid,
+        httpStatus: validity.httpStatus,
+        error: validity.error,
+        quota: quota.available ? {
+          used: quota.used,
+          limit: quota.limit,
+          remaining: quota.remaining,
+          plan: quota.plan,
+          resetAt: quota.resetAt,
+        } : null,
+      });
+    }
+
+    // Admin API - check quota for all tokens
+    if (url.pathname === '/admin/check-quota' && request.method === 'POST') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      const tokens = await getTokens(env.KV);
+      const results: Array<{
+        token: string;
+        email: string;
+        quota: {
+          available: boolean;
+          used?: number;
+          limit?: number;
+          remaining?: number;
+          plan?: string;
+        };
+      }> = [];
+
+      for (const t of tokens) {
+        const quota = await checkTokenQuota(t.token);
+        if (quota.available) {
+          await updateTokenQuota(env.KV, t.token, {
+            available: quota.available,
+            checkedAt: quota.checkedAt,
+            used: quota.used,
+            limit: quota.limit,
+            remaining: quota.remaining,
+            plan: quota.plan,
+            resetAt: quota.resetAt,
+          });
+        }
+        results.push({
+          token: t.token,
+          email: t.email || '',
+          quota: {
+            available: quota.available,
+            used: quota.used,
+            limit: quota.limit,
+            remaining: quota.remaining,
+            plan: quota.plan,
+          },
+        });
+      }
+
+      return jsonResponse({ ok: true, total: results.length, results });
     }
 
     // Admin API - logs
@@ -264,7 +408,12 @@ export default {
           });
         } catch (err) {
           const message = (err as Error).message || 'Internal server error';
-          const isRetryable = message.includes('429') || message.includes('401') || message.includes('403');
+          const isAuthError = message.includes('401') || message.includes('403');
+          const isRetryable = isAuthError || message.includes('429');
+
+          if (isAuthError && env.KV) {
+            autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
+          }
 
           if (isRetryable && poolConfig) {
             markFailed(token);
@@ -342,7 +491,12 @@ export default {
           });
         } catch (err) {
           const message = (err as Error).message || 'Internal server error';
-          const isRetryable = message.includes('429') || message.includes('401') || message.includes('403');
+          const isAuthError = message.includes('401') || message.includes('403');
+          const isRetryable = isAuthError || message.includes('429');
+
+          if (isAuthError && env.KV) {
+            autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
+          }
 
           if (isRetryable && poolConfig) {
             markFailed(token);
