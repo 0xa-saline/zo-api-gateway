@@ -43,36 +43,112 @@ export async function checkTokenValidity(token: string): Promise<TokenCheckResul
   }
 }
 
-export async function checkTokenQuota(token: string): Promise<TokenQuotaResult> {
-  const checkedAt = Date.now();
+// Try to extract quota/usage info from a JSON response, scanning common field patterns
+function extractQuotaFields(data: Record<string, unknown>, result: TokenQuotaResult): void {
+  // Direct top-level fields
+  for (const key of ['used', 'usage', 'tokens_used', 'credits_used', 'total_usage']) {
+    if (typeof data[key] === 'number') { result.used = data[key] as number; break; }
+  }
+  for (const key of ['limit', 'quota', 'credits_limit', 'total_limit', 'credits_total', 'total_credits']) {
+    if (typeof data[key] === 'number') { result.limit = data[key] as number; break; }
+  }
+  for (const key of ['remaining', 'credits_remaining', 'balance', 'credits_balance', 'credits_left']) {
+    if (typeof data[key] === 'number') { result.remaining = data[key] as number; break; }
+  }
+  for (const key of ['plan', 'plan_name', 'subscription', 'tier']) {
+    if (typeof data[key] === 'string') { result.plan = data[key] as string; break; }
+  }
+  for (const key of ['reset_at', 'resetAt', 'reset_date', 'renewal_date']) {
+    if (typeof data[key] === 'string') { result.resetAt = data[key] as string; break; }
+  }
+
+  // Nested usage/quota/billing objects
+  for (const container of ['usage', 'quota', 'billing', 'credits', 'account', 'subscription']) {
+    const nested = data[container];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const obj = nested as Record<string, unknown>;
+      if (result.used === undefined) {
+        for (const key of ['used', 'total_used', 'count', 'tokens_used', 'credits_used']) {
+          if (typeof obj[key] === 'number') { result.used = obj[key] as number; break; }
+        }
+      }
+      if (result.limit === undefined) {
+        for (const key of ['limit', 'total', 'max', 'quota', 'credits_total']) {
+          if (typeof obj[key] === 'number') { result.limit = obj[key] as number; break; }
+        }
+      }
+      if (result.remaining === undefined) {
+        for (const key of ['remaining', 'balance', 'left', 'credits_remaining']) {
+          if (typeof obj[key] === 'number') { result.remaining = obj[key] as number; break; }
+        }
+      }
+      if (result.plan === undefined) {
+        for (const key of ['plan', 'name', 'tier']) {
+          if (typeof obj[key] === 'string') { result.plan = obj[key] as string; break; }
+        }
+      }
+    }
+  }
+
+  // Derive remaining if not provided
+  if (result.remaining === undefined && result.limit !== undefined && result.used !== undefined) {
+    result.remaining = result.limit - result.used;
+  }
+}
+
+// Try a single endpoint for quota info
+async function tryQuotaEndpoint(url: string, token: string): Promise<TokenQuotaResult | null> {
   try {
-    const resp = await fetch(`${ZO_API_BASE}/zo/usage`, {
+    const resp = await fetch(url, {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
     });
 
-    if (!resp.ok) {
-      return { available: false, checkedAt };
-    }
+    if (!resp.ok) return null;
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.includes('json')) return null;
 
     const data = (await resp.json()) as Record<string, unknown>;
+    const result: TokenQuotaResult = { available: false, checkedAt: Date.now(), raw: data };
 
-    const result: TokenQuotaResult = { available: true, checkedAt, raw: data };
-    if (typeof data.used === 'number') result.used = data.used;
-    if (typeof data.limit === 'number') result.limit = data.limit;
-    if (typeof data.remaining === 'number') result.remaining = data.remaining;
-    if (typeof data.plan === 'string') result.plan = data.plan;
-    if (typeof data.reset_at === 'string') result.resetAt = data.reset_at;
+    extractQuotaFields(data, result);
 
-    // derive remaining if not provided
-    if (result.remaining === undefined && result.limit !== undefined && result.used !== undefined) {
-      result.remaining = result.limit - result.used;
+    // Consider it available if we found any meaningful data
+    if (result.used !== undefined || result.limit !== undefined || result.remaining !== undefined || result.plan !== undefined) {
+      result.available = true;
     }
 
-    return result;
+    return result.available ? result : null;
   } catch {
-    return { available: false, checkedAt };
+    return null;
   }
+}
+
+const QUOTA_ENDPOINTS = [
+  '/zo/usage',
+  '/zo/me',
+  '/zo/account',
+  '/zo/billing',
+  '/zo/credits',
+  '/user/me',
+  '/user/usage',
+  '/v1/usage',
+  '/api/usage',
+];
+
+export async function checkTokenQuota(token: string): Promise<TokenQuotaResult> {
+  const checkedAt = Date.now();
+
+  for (const endpoint of QUOTA_ENDPOINTS) {
+    const result = await tryQuotaEndpoint(`${ZO_API_BASE}${endpoint}`, token);
+    if (result) {
+      result.checkedAt = checkedAt;
+      return result;
+    }
+  }
+
+  return { available: false, checkedAt };
 }
 
 export interface BatchCheckResult {
@@ -83,7 +159,6 @@ export interface BatchCheckResult {
 
 export async function batchCheckTokens(tokens: string[]): Promise<BatchCheckResult[]> {
   const results: BatchCheckResult[] = [];
-  // Process tokens sequentially to avoid rate limiting
   for (const token of tokens) {
     const [validity, quota] = await Promise.all([
       checkTokenValidity(token),
