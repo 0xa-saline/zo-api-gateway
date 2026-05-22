@@ -1,15 +1,5 @@
 const KV_KEY = 'zo_tokens';
 
-export interface TokenQuotaInfo {
-  available: boolean;
-  checkedAt: number;
-  used?: number;
-  limit?: number;
-  remaining?: number;
-  plan?: string;
-  resetAt?: string;
-}
-
 export interface StoredToken {
   token: string;
   label: string;
@@ -20,7 +10,6 @@ export interface StoredToken {
   lastChecked?: number;
   status?: 'valid' | 'invalid' | 'unchecked';
   disableReason?: string;
-  quotaInfo?: TokenQuotaInfo;
 }
 
 export async function getTokens(kv: KVNamespace): Promise<StoredToken[]> {
@@ -114,20 +103,6 @@ export async function updateTokenStatus(
     t.disableReason = disableReason || 'auto-check: token invalid';
   }
   if (disableReason !== undefined) t.disableReason = disableReason;
-  await kv.put(KV_KEY, JSON.stringify(tokens));
-  return tokens;
-}
-
-export async function updateTokenQuota(
-  kv: KVNamespace,
-  token: string,
-  quotaInfo: TokenQuotaInfo,
-): Promise<StoredToken[]> {
-  const tokens = await getTokens(kv);
-  const t = tokens.find((t) => t.token === token);
-  if (!t) throw new Error('Token not found');
-  t.quotaInfo = quotaInfo;
-  t.lastChecked = Date.now();
   await kv.put(KV_KEY, JSON.stringify(tokens));
   return tokens;
 }
