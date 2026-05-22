@@ -92,7 +92,7 @@ export function getAdminHTML(baseUrl: string): string {
 
     /* Table */
     .table-wrap { overflow-x: auto; width: 100%; }
-    table { width: 100%; border-collapse: collapse; table-layout: auto; min-width: 960px; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
     th { text-align: left; font-size: 0.75rem; color: #a8a29e; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
     td { padding: 10px 10px; border-bottom: 1px solid #f5f5f4; font-size: 0.85rem; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     tr:hover td { background: #fafaf9; }
@@ -103,8 +103,6 @@ export function getAdminHTML(baseUrl: string): string {
     .badge-valid { background: #dcfce7; color: #16a34a; }
     .badge-invalid { background: #fee2e2; color: #dc2626; }
     .badge-unchecked { background: #f5f5f4; color: #a8a29e; }
-    .quota-text { font-size: 0.8rem; color: #78716c; font-family: 'SF Mono', Monaco, monospace; }
-    .quota-na { color: #a8a29e; font-size: 0.8rem; }
     .disable-reason { font-size: 0.7rem; color: #a8a29e; margin-top: 2px; }
     .btn-warn { background: #f59e0b; color: #fff; }
     .check-actions { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -218,7 +216,6 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>\u72b6\u6001\u68c0\u6d4b</h3>
         <div class="check-actions">
           <button class="btn btn-primary" id="btn-check-all" onclick="checkAllTokens()">\u26a1 \u4e00\u952e\u68c0\u6d4b\u72b6\u6001</button>
-          <button class="btn btn-warn" id="btn-check-quota" onclick="checkAllQuota()">\ud83d\udcca \u68c0\u6d4b\u989d\u5ea6</button>
           <span id="check-progress" style="font-size:0.85rem;color:#78716c;align-self:center"></span>
         </div>
       </div>
@@ -243,7 +240,7 @@ export function getAdminHTML(baseUrl: string): string {
         <h3>Token \u5217\u8868</h3>
         <div class="table-wrap" style="flex:1">
           <table>
-            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u542f\u7528</th><th>\u6709\u6548\u6027</th><th>\u989d\u5ea6</th><th>\u64cd\u4f5c</th></tr></thead>
+            <thead><tr><th>\u90ae\u7bb1</th><th>Space</th><th>Token</th><th>\u6dfb\u52a0\u65f6\u95f4</th><th>\u542f\u7528</th><th>\u6709\u6548\u6027</th><th>\u64cd\u4f5c</th></tr></thead>
             <tbody id="token-list"></tbody>
           </table>
           <div id="list-empty" class="empty-state hidden">\u8fd8\u6ca1\u6709 Token</div>
@@ -535,18 +532,6 @@ function statusBadge(t) {
   return '<span class="badge badge-unchecked">\u672a\u68c0\u6d4b</span>';
 }
 
-function quotaDisplay(t) {
-  if (!t.quotaInfo) return '<span class="quota-na">-</span>';
-  if (!t.quotaInfo.available) return '<span class="quota-na" title="\\u4e0a\\u6e38 API \\u672a\\u63d0\\u4f9b\\u989d\\u5ea6\\u63a5\\u53e3">\\u4e0d\\u652f\\u6301</span>';
-  const q = t.quotaInfo;
-  const parts = [];
-  if (q.remaining !== undefined && q.remaining !== null) parts.push('\\u5269\\u4f59: ' + q.remaining);
-  else if (q.used !== undefined && q.used !== null && q.limit !== undefined && q.limit !== null) parts.push(q.used + ' / ' + q.limit);
-  else if (q.used !== undefined && q.used !== null) parts.push('\\u5df2\\u7528: ' + q.used);
-  if (q.plan) parts.push(q.plan);
-  return parts.length > 0 ? '<span class="quota-text">' + parts.join(' | ') + '</span>' : '<span class="quota-na">\\u4e0d\\u652f\\u6301</span>';
-}
-
 function lastCheckedText(t) {
   if (!t.lastChecked) return '';
   return '<div style="font-size:0.7rem;color:#a8a29e;margin-top:2px">' + new Date(t.lastChecked).toLocaleString('zh-CN') + '</div>';
@@ -571,7 +556,6 @@ function renderTokenList() {
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
       <td>\${statusBadge(t)}\${lastCheckedText(t)}</td>
-      <td>\${quotaDisplay(t)}</td>
       <td><div class="actions-cell">
         <button class="btn btn-outline btn-sm" onclick="openEdit('\${t.token}','\${(t.email||'').replace(/'/g,"\\\\'")}',' \${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
         <button class="btn btn-outline btn-sm" onclick="checkSingle('\${t.token}')">\u68c0\u6d4b</button>
@@ -680,35 +664,11 @@ async function checkAllTokens() {
   btn.innerHTML = '\u26a1 \u4e00\u952e\u68c0\u6d4b\u72b6\u6001';
 }
 
-async function checkAllQuota() {
-  const btn = document.getElementById('btn-check-quota');
-  const progress = document.getElementById('check-progress');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinning">\ud83d\udcca</span> \u68c0\u6d4b\u4e2d...';
-  progress.textContent = '\u6b63\u5728\u68c0\u6d4b\u989d\u5ea6\u4fe1\u606f...';
-  try {
-    const data = await api('POST', '/admin/check-quota');
-    const withQuota = data.results.filter(r => r.quota && r.quota.available).length;
-    toast('\u989d\u5ea6\u68c0\u6d4b\u5b8c\u6210: ' + withQuota + '/' + data.total + ' \u83b7\u53d6\u6210\u529f');
-    progress.textContent = '\u4e0a\u6b21\u68c0\u6d4b: ' + new Date().toLocaleString('zh-CN');
-    loadTokens();
-  } catch (e) {
-    toast('\u68c0\u6d4b\u5931\u8d25: ' + e.message, false);
-    progress.textContent = '';
-  }
-  btn.disabled = false;
-  btn.innerHTML = '\ud83d\udcca \u68c0\u6d4b\u989d\u5ea6';
-}
-
 async function checkSingle(token) {
   toast('\u6b63\u5728\u68c0\u6d4b...');
   try {
     const data = await api('POST', '/admin/check-token', { token });
-    let msg = data.valid ? '\u6709\u6548' : '\u5931\u6548';
-    if (data.quota) {
-      if (data.quota.remaining !== undefined && data.quota.remaining !== null) msg += ' | \u5269\u4f59: ' + data.quota.remaining;
-      else if (data.quota.used !== undefined && data.quota.used !== null) msg += ' | \u5df2\u7528: ' + data.quota.used;
-    }
+    const msg = data.valid ? '\u6709\u6548' : '\u5931\u6548';
     toast('\u68c0\u6d4b\u7ed3\u679c: ' + msg, data.valid);
     loadTokens();
   } catch (e) {
