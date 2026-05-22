@@ -266,17 +266,15 @@ export default {
         await updateTokenStatus(env.KV, body.token, 'invalid', `auto-check: HTTP ${validity.httpStatus}`);
       }
 
-      if (quota.available) {
-        await updateTokenQuota(env.KV, body.token, {
-          available: quota.available,
-          checkedAt: quota.checkedAt,
-          used: quota.used,
-          limit: quota.limit,
-          remaining: quota.remaining,
-          plan: quota.plan,
-          resetAt: quota.resetAt,
-        });
-      }
+      await updateTokenQuota(env.KV, body.token, {
+        available: quota.available,
+        checkedAt: quota.checkedAt,
+        used: quota.used,
+        limit: quota.limit,
+        remaining: quota.remaining,
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      });
 
       return jsonResponse({
         ok: true,
@@ -314,17 +312,15 @@ export default {
 
       for (const t of tokens) {
         const quota = await checkTokenQuota(t.token);
-        if (quota.available) {
-          await updateTokenQuota(env.KV, t.token, {
-            available: quota.available,
-            checkedAt: quota.checkedAt,
-            used: quota.used,
-            limit: quota.limit,
-            remaining: quota.remaining,
-            plan: quota.plan,
-            resetAt: quota.resetAt,
-          });
-        }
+        await updateTokenQuota(env.KV, t.token, {
+          available: quota.available,
+          checkedAt: quota.checkedAt,
+          used: quota.used,
+          limit: quota.limit,
+          remaining: quota.remaining,
+          plan: quota.plan,
+          resetAt: quota.resetAt,
+        });
         results.push({
           token: t.token,
           email: t.email || '',

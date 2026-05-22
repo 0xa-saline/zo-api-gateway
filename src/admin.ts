@@ -92,9 +92,9 @@ export function getAdminHTML(baseUrl: string): string {
 
     /* Table */
     .table-wrap { overflow-x: auto; width: 100%; }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th { text-align: left; font-size: 0.8rem; color: #a8a29e; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 12px 14px; border-bottom: 1px solid #f5f5f4; font-size: 0.9rem; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; min-width: 960px; }
+    th { text-align: left; font-size: 0.75rem; color: #a8a29e; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #e7e5e4; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+    td { padding: 10px 10px; border-bottom: 1px solid #f5f5f4; font-size: 0.85rem; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     tr:hover td { background: #fafaf9; }
     .token-mono { font-family: 'SF Mono', Monaco, monospace; font-size: 0.82rem; color: #78716c; }
     .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
@@ -536,14 +536,15 @@ function statusBadge(t) {
 }
 
 function quotaDisplay(t) {
-  if (!t.quotaInfo || !t.quotaInfo.available) return '<span class="quota-na">-</span>';
+  if (!t.quotaInfo) return '<span class="quota-na">-</span>';
+  if (!t.quotaInfo.available) return '<span class="quota-na" title="\\u4e0a\\u6e38 API \\u672a\\u63d0\\u4f9b\\u989d\\u5ea6\\u63a5\\u53e3">\\u4e0d\\u652f\\u6301</span>';
   const q = t.quotaInfo;
   const parts = [];
-  if (q.remaining !== undefined && q.remaining !== null) parts.push('\u5269\u4f59: ' + q.remaining);
+  if (q.remaining !== undefined && q.remaining !== null) parts.push('\\u5269\\u4f59: ' + q.remaining);
   else if (q.used !== undefined && q.used !== null && q.limit !== undefined && q.limit !== null) parts.push(q.used + ' / ' + q.limit);
-  else if (q.used !== undefined && q.used !== null) parts.push('\u5df2\u7528: ' + q.used);
+  else if (q.used !== undefined && q.used !== null) parts.push('\\u5df2\\u7528: ' + q.used);
   if (q.plan) parts.push(q.plan);
-  return parts.length > 0 ? '<span class="quota-text">' + parts.join(' | ') + '</span>' : '<span class="quota-na">-</span>';
+  return parts.length > 0 ? '<span class="quota-text">' + parts.join(' | ') + '</span>' : '<span class="quota-na">\\u4e0d\\u652f\\u6301</span>';
 }
 
 function lastCheckedText(t) {
