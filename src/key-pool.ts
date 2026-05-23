@@ -1,6 +1,9 @@
+export type DispatchStrategy = 'round-robin' | 'sticky';
+
 export interface KeyPoolConfig {
   tokens: string[];
   cooldownMs: number;
+  strategy: DispatchStrategy;
 }
 
 interface TokenState {
@@ -21,24 +24,37 @@ function getState(token: string): TokenState {
 }
 
 let roundRobinIndex = 0;
+let stickyToken: string | null = null;
 
-export function pickToken(config: KeyPoolConfig): string | null {
-  const { tokens, cooldownMs } = config;
-  if (tokens.length === 0) return null;
-
+function getAvailable(tokens: string[], cooldownMs: number): string[] {
   const now = Date.now();
   const available: string[] = [];
-
   for (const token of tokens) {
     const state = getState(token);
     if (state.failedAt === 0 || now - state.failedAt > cooldownMs) {
       available.push(token);
     }
   }
+  return available;
+}
+
+export function pickToken(config: KeyPoolConfig): string | null {
+  const { tokens, cooldownMs, strategy } = config;
+  if (tokens.length === 0) return null;
+
+  let available = getAvailable(tokens, cooldownMs);
 
   if (available.length === 0) {
     resetAll(tokens);
-    return tokens[roundRobinIndex++ % tokens.length];
+    available = tokens;
+  }
+
+  if (strategy === 'sticky') {
+    if (stickyToken && available.includes(stickyToken)) {
+      return stickyToken;
+    }
+    stickyToken = available[0];
+    return stickyToken;
   }
 
   return available[roundRobinIndex++ % available.length];
@@ -48,6 +64,9 @@ export function markFailed(token: string): void {
   const state = getState(token);
   state.failedAt = Date.now();
   state.failCount++;
+  if (stickyToken === token) {
+    stickyToken = null;
+  }
 }
 
 export function markSuccess(token: string): void {
@@ -63,14 +82,12 @@ function resetAll(tokens: string[]): void {
   }
 }
 
-export function getPoolStatus(config: KeyPoolConfig): { total: number; available: number } {
-  const now = Date.now();
-  let available = 0;
-  for (const token of config.tokens) {
-    const state = getState(token);
-    if (state.failedAt === 0 || now - state.failedAt > config.cooldownMs) {
-      available++;
-    }
-  }
-  return { total: config.tokens.length, available };
+export function getPoolStatus(config: KeyPoolConfig): { total: number; available: number; strategy: DispatchStrategy; stickyToken: string | null } {
+  const available = getAvailable(config.tokens, config.cooldownMs).length;
+  return {
+    total: config.tokens.length,
+    available,
+    strategy: config.strategy,
+    stickyToken: config.strategy === 'sticky' ? stickyToken : null,
+  };
 }

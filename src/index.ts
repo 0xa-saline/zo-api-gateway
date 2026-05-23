@@ -1,6 +1,7 @@
 import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse, UpstreamError } from './converter';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
+import type { DispatchStrategy } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken } from './token-store';
 import { getLogs, addLog } from './call-log';
 import { checkTokenValidity } from './key-checker';
@@ -33,7 +34,7 @@ function corsHeaders(): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'content-type, authorization, x-api-key, anthropic-version',
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Expose-Headers': 'content-type',
   };
 }
@@ -66,20 +67,34 @@ function parseEnvTokens(raw: string): string[] {
   return raw.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
+const KV_STRATEGY_KEY = 'dispatch_strategy';
+
+async function getDispatchStrategy(kv?: KVNamespace): Promise<DispatchStrategy> {
+  if (!kv) return 'round-robin';
+  const val = await kv.get(KV_STRATEGY_KEY);
+  if (val === 'sticky') return 'sticky';
+  return 'round-robin';
+}
+
+async function setDispatchStrategy(kv: KVNamespace, strategy: DispatchStrategy): Promise<void> {
+  await kv.put(KV_STRATEGY_KEY, strategy);
+}
+
 async function buildPoolConfig(env: Env): Promise<KeyPoolConfig | null> {
   const cooldownMs = parseInt(env.COOLDOWN_MS || '60000', 10);
+  const strategy = await getDispatchStrategy(env.KV);
 
   if (env.KV) {
     const kvTokens = await getEnabledTokenStrings(env.KV);
     if (kvTokens.length > 0) {
-      return { tokens: kvTokens, cooldownMs };
+      return { tokens: kvTokens, cooldownMs, strategy };
     }
   }
 
   if (env.ZO_TOKENS) {
     const envTokens = parseEnvTokens(env.ZO_TOKENS);
     if (envTokens.length > 0) {
-      return { tokens: envTokens, cooldownMs };
+      return { tokens: envTokens, cooldownMs, strategy };
     }
   }
 
@@ -269,6 +284,29 @@ export default {
         httpStatus: validity.httpStatus,
         error: validity.error,
       });
+    }
+
+    // Admin API - dispatch strategy
+    if (url.pathname === '/admin/strategy') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+
+      if (request.method === 'GET') {
+        const strategy = await getDispatchStrategy(env.KV);
+        return jsonResponse({ strategy });
+      }
+
+      if (request.method === 'PUT') {
+        const body = (await request.json()) as { strategy: string };
+        if (body.strategy !== 'round-robin' && body.strategy !== 'sticky') {
+          return jsonResponse({ error: 'strategy must be "round-robin" or "sticky"' }, 400);
+        }
+        await setDispatchStrategy(env.KV, body.strategy);
+        return jsonResponse({ ok: true, strategy: body.strategy });
+      }
+
+      return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
     // Admin API - logs
