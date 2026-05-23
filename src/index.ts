@@ -108,7 +108,7 @@ function resolveToken(clientKey: string, env: Env, poolConfig: KeyPoolConfig | n
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
@@ -344,13 +344,13 @@ export default {
           if (body.stream) {
             const resp = buildStreamingResponse(body, token);
             markSuccess(token);
-            addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {});
+            ctx.waitUntil(addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {}));
             return resp;
           }
 
           const result = await forwardNonStreaming(body, token);
           markSuccess(token);
-          addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {});
+          ctx.waitUntil(addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {}));
           return new Response(JSON.stringify(result), {
             headers: { 'Content-Type': 'application/json', ...corsHeaders() },
           });
@@ -361,7 +361,7 @@ export default {
           const isRetryable = isAuthError || upstreamStatus === 429;
 
           if (isAuthError && env.KV) {
-            autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
+            ctx.waitUntil(autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {}));
           }
 
           if (isRetryable && poolConfig) {
@@ -369,7 +369,7 @@ export default {
             continue;
           }
 
-          addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, message).catch(() => {});
+          ctx.waitUntil(addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, message).catch(() => {}));
           const status = upstreamStatus === 401 ? 401
             : upstreamStatus === 429 ? 429
             : upstreamStatus === 403 ? 403
@@ -378,7 +378,7 @@ export default {
         }
       }
 
-      addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {});
+      ctx.waitUntil(addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {}));
       return errorResponse(503, 'api_error', 'All upstream tokens exhausted after retries.');
     }
 
@@ -429,7 +429,7 @@ export default {
           cachedResult.usage.prompt_tokens_details = {
             cached_tokens: cachedResult.usage.prompt_tokens,
           };
-          addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+          ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}));
           return new Response(JSON.stringify(cachedResult), {
             headers: { 'Content-Type': 'application/json', ...corsHeaders() },
           });
@@ -446,18 +446,18 @@ export default {
           if (body.stream) {
             const resp = buildOpenAIStreamingResponse(body, token);
             markSuccess(token);
-            addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+            ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}));
             return resp;
           }
 
           const result = await forwardOpenAINonStreaming(body, token);
           markSuccess(token);
-          addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+          ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}));
 
           // Cache the result
           if (env.KV) {
             const cacheKey = buildCacheKey(body.model, body.messages);
-            setCache(env.KV, cacheKey, JSON.stringify(result), body.model, cacheTtl).catch(() => {});
+            ctx.waitUntil(setCache(env.KV, cacheKey, JSON.stringify(result), body.model, cacheTtl).catch(() => {}));
           }
 
           return new Response(JSON.stringify(result), {
@@ -470,7 +470,7 @@ export default {
           const isRetryable = isAuthError || upstreamStatus === 429;
 
           if (isAuthError && env.KV) {
-            autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
+            ctx.waitUntil(autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {}));
           }
 
           if (isRetryable && poolConfig) {
@@ -478,7 +478,7 @@ export default {
             continue;
           }
 
-          addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, message).catch(() => {});
+          ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, message).catch(() => {}));
           const status = upstreamStatus === 401 ? 401
             : upstreamStatus === 429 ? 429
             : upstreamStatus === 403 ? 403
@@ -487,7 +487,7 @@ export default {
         }
       }
 
-      addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {});
+      ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, 'All tokens exhausted').catch(() => {}));
       return errorResponse(503, 'api_error', 'All upstream tokens exhausted after retries.');
     }
 
