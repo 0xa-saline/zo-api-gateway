@@ -169,13 +169,22 @@ export function buildStreamingResponse(
             try {
               const data = JSON.parse(line.slice(6));
 
-              if (eventType === 'FrontendModelResponse' && data.content) {
-                outputTokens += Math.ceil(data.content.length / 4);
+              if (eventType === 'PartStartEvent' && data.part?.part_kind === 'text' && data.part?.content) {
+                outputTokens += Math.ceil(data.part.content.length / 4);
                 await write('content_block_delta', {
                   type: 'content_block_delta',
                   index: 0,
-                  delta: { type: 'text_delta', text: data.content },
+                  delta: { type: 'text_delta', text: data.part.content },
                 });
+              } else if (eventType === 'PartDeltaEvent' && data.delta?.part_delta_kind === 'text' && data.delta?.content_delta) {
+                outputTokens += Math.ceil(data.delta.content_delta.length / 4);
+                await write('content_block_delta', {
+                  type: 'content_block_delta',
+                  index: 0,
+                  delta: { type: 'text_delta', text: data.delta.content_delta },
+                });
+              } else if (eventType === 'FrontendModelResponse' && data.parts) {
+                // Legacy: final aggregated response
               } else if (eventType === 'End') {
                 // Stream completed
               } else if (eventType === 'Error') {
@@ -369,10 +378,16 @@ export function buildOpenAIStreamingResponse(
           } else if (line.startsWith('data: ') && eventType) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (eventType === 'FrontendModelResponse' && data.content) {
+              let text = '';
+              if (eventType === 'PartStartEvent' && data.part?.part_kind === 'text' && data.part?.content) {
+                text = data.part.content;
+              } else if (eventType === 'PartDeltaEvent' && data.delta?.part_delta_kind === 'text' && data.delta?.content_delta) {
+                text = data.delta.content_delta;
+              }
+              if (text) {
                 const chunk: OpenAIStreamChunk = {
                   id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-                  model, choices: [{ index: 0, delta: { content: data.content }, finish_reason: null }],
+                  model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
                 };
                 await writeSSE(JSON.stringify(chunk));
               }
