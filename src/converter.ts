@@ -78,8 +78,35 @@ function formatMessagesToInput(req: AnthropicRequest): string {
   return parts.join('\n\n');
 }
 
-function resolveModelName(model: string): string {
+const MODEL_ALIASES: Record<string, string> = {
+  'claude-opus-4-7': 'anthropic:claude-opus-4-7',
+  'claude-sonnet-4-6': 'anthropic:claude-sonnet-4-6',
+  'gpt-5.3-codex': 'openai:gpt-5.3-codex',
+  'gpt-5.4': 'openai:gpt-5.4',
+  'gpt-5.5': 'openai:gpt-5.5',
+  'gpt-5.4-mini': 'openai:gpt-5.4-mini',
+  'deepseek-v4-pro': 'deepseek:deepseek-v4-pro',
+  'glm-5': 'zai:glm-5',
+  'minimax-m2.5': 'minimax:minimax-m2.5',
+  'minimax-m2.7': 'minimax:minimax-m2.7',
+  'gemini-3.1-pro-preview': 'google:gemini-3.1-pro-preview',
+};
+
+function resolveZoModelName(model: string): string {
+  const alias = MODEL_ALIASES[model];
+  if (alias) return alias;
+
+  if (model.startsWith('zo:')) model = model.slice(3);
+  if (model.includes('/')) model = model.replace('/', ':');
   if (model.includes(':')) return model;
+
+  if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4') || model.startsWith('chatgpt')) {
+    return `openai:${model}`;
+  }
+  if (model.startsWith('deepseek')) return `deepseek:${model}`;
+  if (model.startsWith('glm')) return `zai:${model}`;
+  if (model.startsWith('minimax')) return `minimax:${model}`;
+  if (model.startsWith('gemini')) return `google:${model}`;
   return `anthropic:${model}`;
 }
 
@@ -96,7 +123,7 @@ export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inp
   const inputText = formatMessagesToInput(req);
   const zoReq: ZoAskRequest = {
     input: inputText,
-    model_name: resolveModelName(req.model),
+    model_name: resolveZoModelName(req.model),
     stream: req.stream ?? false,
   };
   // Allow advanced clients to bypass the default Zo persona by passing
@@ -437,19 +464,7 @@ export function buildStreamingResponse(
 // OpenAI Chat Completions support
 
 function resolveOpenAIModel(model: string): string {
-  // Strip zo: prefix: zo:anthropic/claude-opus-4-7 → anthropic/claude-opus-4-7
-  if (model.startsWith('zo:')) {
-    model = model.slice(3);
-  }
-  // Convert slash to colon: anthropic/claude-opus-4-7 → anthropic:claude-opus-4-7
-  if (model.includes('/')) {
-    model = model.replace('/', ':');
-  }
-  // Bare model name without provider: claude-opus-4-7 → anthropic:claude-opus-4-7
-  if (!model.includes(':')) {
-    model = `anthropic:${model}`;
-  }
-  return model;
+  return resolveZoModelName(model);
 }
 
 function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
