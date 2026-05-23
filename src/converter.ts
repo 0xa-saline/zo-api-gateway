@@ -1,4 +1,4 @@
-import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage } from './types';
+import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage, OpenAIContentPart } from './types';
 
 const ZO_API_BASE = 'https://api.zo.computer';
 
@@ -521,17 +521,30 @@ function parseToolCalls(text: string): { toolCalls: OpenAIToolCall[]; textConten
   return { toolCalls, textContent };
 }
 
+function extractOpenAIContent(content: string | OpenAIContentPart[] | null): string {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => p.type === 'text' && p.text)
+      .map((p) => p.text!)
+      .join('\n');
+  }
+  return String(content);
+}
+
 function formatMessageContent(msg: OpenAIMessage): string {
+  const text = extractOpenAIContent(msg.content);
   if (msg.role === 'tool') {
-    return `[Tool Result (${msg.name ?? msg.tool_call_id ?? 'unknown'})]\n${msg.content ?? ''}`;
+    return `[Tool Result (${msg.name ?? msg.tool_call_id ?? 'unknown'})]\n${text}`;
   }
   if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
     const calls = msg.tool_calls.map((tc) =>
       `<tool_call>${JSON.stringify({ name: tc.function.name, arguments: JSON.parse(tc.function.arguments) })}</tool_call>`
     ).join('\n');
-    return msg.content ? `${msg.content}\n${calls}` : calls;
+    return text ? `${text}\n${calls}` : calls;
   }
-  return msg.content ?? '';
+  return text;
 }
 
 function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
