@@ -476,14 +476,15 @@ function formatToolsPrompt(tools: OpenAITool[]): string {
     return s;
   }).join('\n');
   return [
-    'You have access to the following tools. To call a tool, respond with a JSON block wrapped in <tool_call> tags.',
-    'You can make multiple tool calls. Format each call as:',
+    '# Tool Use Instructions',
+    'You have access to the following tools. When you need to use a tool, you MUST respond with ONLY a JSON block wrapped in <tool_call> tags.',
+    'You can make multiple tool calls. Format each call exactly as:',
     '<tool_call>{"name": "function_name", "arguments": {"arg1": "value1"}}</tool_call>',
     '',
     'Available tools:',
     defs,
     '',
-    'If you need to call tools, ONLY output <tool_call> blocks, no other text.',
+    'IMPORTANT: When you decide to use a tool, your ENTIRE response must consist of <tool_call> blocks only, with no other text before or after them.',
     'If you do not need to call any tool, respond normally without <tool_call> tags.',
   ].join('\n');
 }
@@ -535,15 +536,25 @@ function formatMessageContent(msg: OpenAIMessage): string {
 
 function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
   const parts: string[] = [];
-  if (req.tools && req.tools.length > 0) {
-    parts.push(`[System]\n${formatToolsPrompt(req.tools)}`);
-  }
-  for (const msg of req.messages) {
+  const hasTools = req.tools && req.tools.length > 0;
+  const toolsPrompt = hasTools ? formatToolsPrompt(req.tools!) : '';
+
+  for (let i = 0; i < req.messages.length; i++) {
+    const msg = req.messages[i];
     const role = msg.role === 'user' ? 'Human'
       : msg.role === 'system' ? 'System'
       : msg.role === 'tool' ? 'Tool'
       : 'Assistant';
-    parts.push(`[${role}]\n${formatMessageContent(msg)}`);
+    let content = formatMessageContent(msg);
+    // Inject tool instructions into the last user message so the model sees them inline
+    if (hasTools && msg.role === 'user' && i === req.messages.length - 1) {
+      content = `${toolsPrompt}\n\n---\n\n${content}`;
+    }
+    parts.push(`[${role}]\n${content}`);
+  }
+  // Fallback: if no user message at the end, prepend tool instructions as System block
+  if (hasTools && (req.messages.length === 0 || req.messages[req.messages.length - 1].role !== 'user')) {
+    parts.unshift(`[System]\n${toolsPrompt}`);
   }
   return {
     input: parts.join('\n\n'),
