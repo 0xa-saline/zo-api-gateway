@@ -2,8 +2,57 @@ import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskR
 
 const ZO_API_BASE = 'https://api.zo.computer';
 
+export class UpstreamError extends Error {
+  status: number;
+  body: string;
+  constructor(status: number, body: string) {
+    super(`Zo API error ${status}: ${body}`);
+    this.name = 'UpstreamError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function estimateTokens(text: string): number {
+  if (!text) return 0;
+  // length / 4 is a rough estimate for mixed CJK + ASCII content; not authoritative.
+  return Math.ceil(text.length / 4);
+}
+
+function applyStopSequences(
+  text: string,
+  stopSequences: string[] | undefined,
+): { text: string; matched: string | null } {
+  if (!stopSequences || stopSequences.length === 0) return { text, matched: null };
+  let earliest = -1;
+  let matched: string | null = null;
+  for (const seq of stopSequences) {
+    if (!seq) continue;
+    const idx = text.indexOf(seq);
+    if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+      earliest = idx;
+      matched = seq;
+    }
+  }
+  if (earliest === -1 || matched === null) return { text, matched: null };
+  return { text: text.slice(0, earliest), matched };
+}
+
+function applyMaxTokens(
+  text: string,
+  maxTokens: number | undefined,
+): { text: string; truncated: boolean } {
+  if (!maxTokens || maxTokens <= 0) return { text, truncated: false };
+  // Inverse of estimateTokens: assume max_tokens * 4 characters cap.
+  const maxChars = maxTokens * 4;
+  if (text.length <= maxChars) return { text, truncated: false };
+  return { text: text.slice(0, maxChars), truncated: true };
+}
+
 function extractTextContent(content: string | AnthropicContentBlock[]): string {
   if (typeof content === 'string') return content;
+  // Only text blocks are forwarded to the Zo backend: it does not accept image
+  // or thinking blocks. See README "Known Limitations".
   return content
     .filter((b) => b.type === 'text' && b.text)
     .map((b) => b.text!)
@@ -43,25 +92,65 @@ function generateMessageId(): string {
   return id;
 }
 
-export function anthropicToZo(req: AnthropicRequest): ZoAskRequest {
-  return {
-    input: formatMessagesToInput(req),
+export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inputText: string } {
+  const inputText = formatMessagesToInput(req);
+  const zoReq: ZoAskRequest = {
+    input: inputText,
     model_name: resolveModelName(req.model),
     stream: req.stream ?? false,
   };
+  // Allow advanced clients to bypass the default Zo persona by passing
+  // metadata.persona_id (see README).
+  const personaId = req.metadata && typeof req.metadata === 'object'
+    ? (req.metadata as Record<string, unknown>).persona_id
+    : undefined;
+  if (typeof personaId === 'string' && personaId.length > 0) {
+    zoReq.persona_id = personaId;
+  }
+  return { zoReq, inputText };
 }
 
-export function zoToAnthropic(zoOutput: string, model: string): AnthropicResponse {
-  const outputTokens = Math.ceil(zoOutput.length / 4);
+export function zoToAnthropic(
+  zoOutput: string,
+  model: string,
+  req: AnthropicRequest,
+  inputText: string,
+): AnthropicResponse {
+  let text = zoOutput;
+  let stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' = 'end_turn';
+  let stopSequence: string | null = null;
+
+  // Honor stop_sequences client-side, since the Zo backend does not.
+  const stopResult = applyStopSequences(text, req.stop_sequences);
+  if (stopResult.matched) {
+    text = stopResult.text;
+    stopReason = 'stop_sequence';
+    stopSequence = stopResult.matched;
+  }
+
+  // Honor max_tokens client-side, since the Zo backend does not.
+  const maxResult = applyMaxTokens(text, req.max_tokens);
+  if (maxResult.truncated) {
+    text = maxResult.text;
+    // max_tokens takes precedence over stop_sequence if it triggers first.
+    if (stopReason === 'end_turn') {
+      stopReason = 'max_tokens';
+      stopSequence = null;
+    }
+  }
+
   return {
     id: generateMessageId(),
     type: 'message',
     role: 'assistant',
     model,
-    content: [{ type: 'text', text: zoOutput }],
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: outputTokens },
+    content: [{ type: 'text', text }],
+    stop_reason: stopReason,
+    stop_sequence: stopSequence,
+    usage: {
+      input_tokens: estimateTokens(inputText),
+      output_tokens: estimateTokens(text),
+    },
   };
 }
 
@@ -69,7 +158,7 @@ export async function forwardNonStreaming(
   req: AnthropicRequest,
   token: string,
 ): Promise<AnthropicResponse> {
-  const zoReq = anthropicToZo(req);
+  const { zoReq, inputText } = anthropicToZo(req);
   zoReq.stream = false;
 
   const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
@@ -83,21 +172,24 @@ export async function forwardNonStreaming(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`Zo API error ${resp.status}: ${body}`);
+    throw new UpstreamError(resp.status, body);
   }
 
   const zoResp = (await resp.json()) as { output: string };
-  return zoToAnthropic(zoResp.output, req.model);
+  return zoToAnthropic(zoResp.output, req.model, req, inputText);
 }
 
 export function buildStreamingResponse(
   req: AnthropicRequest,
   token: string,
 ): Response {
-  const zoReq = anthropicToZo(req);
+  const { zoReq, inputText } = anthropicToZo(req);
   zoReq.stream = true;
   const model = req.model;
   const msgId = generateMessageId();
+  const inputTokens = estimateTokens(inputText);
+  const maxChars = req.max_tokens && req.max_tokens > 0 ? req.max_tokens * 4 : Infinity;
+  const stopSequences = (req.stop_sequences || []).filter((s) => !!s);
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -108,6 +200,104 @@ export function buildStreamingResponse(
   };
 
   (async () => {
+    let textBlockOpen = false;
+    let thinkingBlockOpen = false;
+    let textIndex = 0;
+    let accumulatedText = '';
+    let stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' = 'end_turn';
+    let stopSequence: string | null = null;
+
+    const openTextBlock = async () => {
+      if (textBlockOpen) return;
+      if (thinkingBlockOpen) {
+        await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
+        thinkingBlockOpen = false;
+        textIndex += 1;
+      }
+      await write('content_block_start', {
+        type: 'content_block_start',
+        index: textIndex,
+        content_block: { type: 'text', text: '' },
+      });
+      textBlockOpen = true;
+    };
+
+    const openThinkingBlock = async () => {
+      if (thinkingBlockOpen) return;
+      if (textBlockOpen) {
+        await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
+        textBlockOpen = false;
+        textIndex += 1;
+      }
+      await write('content_block_start', {
+        type: 'content_block_start',
+        index: textIndex,
+        content_block: { type: 'thinking', thinking: '' },
+      });
+      thinkingBlockOpen = true;
+    };
+
+    const emitTextDelta = async (chunk: string): Promise<boolean> => {
+      // Returns true if the stream should stop (max_tokens / stop_sequence hit).
+      if (!chunk) return false;
+      await openTextBlock();
+
+      let toEmit = chunk;
+      const projectedLen = accumulatedText.length + toEmit.length;
+      if (projectedLen > maxChars) {
+        toEmit = toEmit.slice(0, Math.max(0, maxChars - accumulatedText.length));
+        accumulatedText += toEmit;
+        if (toEmit) {
+          await write('content_block_delta', {
+            type: 'content_block_delta',
+            index: textIndex,
+            delta: { type: 'text_delta', text: toEmit },
+          });
+        }
+        stopReason = 'max_tokens';
+        stopSequence = null;
+        return true;
+      }
+
+      accumulatedText += toEmit;
+      await write('content_block_delta', {
+        type: 'content_block_delta',
+        index: textIndex,
+        delta: { type: 'text_delta', text: toEmit },
+      });
+
+      // Check for stop_sequences against the accumulated text.
+      if (stopSequences.length > 0) {
+        let earliest = -1;
+        let matched: string | null = null;
+        for (const seq of stopSequences) {
+          const idx = accumulatedText.indexOf(seq);
+          if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+            earliest = idx;
+            matched = seq;
+          }
+        }
+        if (matched !== null && earliest !== -1) {
+          // Note: we already emitted past the stop_sequence in this delta — fidelity
+          // is best-effort because the upstream Zo backend does not honor stop_sequences.
+          stopReason = 'stop_sequence';
+          stopSequence = matched;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const emitThinkingDelta = async (chunk: string) => {
+      if (!chunk) return;
+      await openThinkingBlock();
+      await write('content_block_delta', {
+        type: 'content_block_delta',
+        index: textIndex,
+        delta: { type: 'thinking_delta', thinking: chunk },
+      });
+    };
+
     try {
       // Send message_start
       await write('message_start', {
@@ -120,15 +310,8 @@ export function buildStreamingResponse(
           content: [],
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: { input_tokens: inputTokens, output_tokens: 0 },
         },
-      });
-
-      // Send content_block_start
-      await write('content_block_start', {
-        type: 'content_block_start',
-        index: 0,
-        content_block: { type: 'text', text: '' },
       });
 
       // Fetch streaming from Zo
@@ -151,10 +334,10 @@ export function buildStreamingResponse(
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let outputTokens = 0;
       let eventType = '';
+      let shouldStop = false;
 
-      while (true) {
+      while (!shouldStop) {
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -163,26 +346,25 @@ export function buildStreamingResponse(
         buffer = lines.pop() || '';
 
         for (const line of lines) {
+          if (shouldStop) break;
           if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim();
           } else if (line.startsWith('data: ') && eventType) {
             try {
               const data = JSON.parse(line.slice(6));
+              const partKind = data.part?.part_kind;
+              const partContent = data.part?.content;
+              const deltaKind = data.delta?.part_delta_kind;
+              const deltaContent = data.delta?.content_delta;
 
-              if (eventType === 'PartStartEvent' && data.part?.part_kind === 'text' && data.part?.content) {
-                outputTokens += Math.ceil(data.part.content.length / 4);
-                await write('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: 0,
-                  delta: { type: 'text_delta', text: data.part.content },
-                });
-              } else if (eventType === 'PartDeltaEvent' && data.delta?.part_delta_kind === 'text' && data.delta?.content_delta) {
-                outputTokens += Math.ceil(data.delta.content_delta.length / 4);
-                await write('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: 0,
-                  delta: { type: 'text_delta', text: data.delta.content_delta },
-                });
+              if (eventType === 'PartStartEvent' && partKind === 'text' && partContent) {
+                shouldStop = await emitTextDelta(partContent);
+              } else if (eventType === 'PartDeltaEvent' && deltaKind === 'text' && deltaContent) {
+                shouldStop = await emitTextDelta(deltaContent);
+              } else if (eventType === 'PartStartEvent' && (partKind === 'thinking' || partKind === 'reasoning') && partContent) {
+                await emitThinkingDelta(partContent);
+              } else if (eventType === 'PartDeltaEvent' && (deltaKind === 'thinking' || deltaKind === 'reasoning') && deltaContent) {
+                await emitThinkingDelta(deltaContent);
               } else if (eventType === 'End') {
                 // Stream completed
               } else if (eventType === 'Error') {
@@ -199,17 +381,30 @@ export function buildStreamingResponse(
         }
       }
 
-      // Send content_block_stop
-      await write('content_block_stop', {
-        type: 'content_block_stop',
-        index: 0,
-      });
+      // Best-effort: ask upstream to close. The reader.cancel() is ignored on errors.
+      try { reader.cancel(); } catch { /* ignore */ }
+
+      // Close any open content_block
+      if (textBlockOpen || thinkingBlockOpen) {
+        await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
+        textBlockOpen = false;
+        thinkingBlockOpen = false;
+      } else {
+        // Open and immediately close an empty text block so the SSE shape stays valid
+        // even for zero-output responses (e.g. upstream returned nothing).
+        await write('content_block_start', {
+          type: 'content_block_start',
+          index: textIndex,
+          content_block: { type: 'text', text: '' },
+        });
+        await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
+      }
 
       // Send message_delta
       await write('message_delta', {
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
-        usage: { output_tokens: outputTokens },
+        delta: { stop_reason: stopReason, stop_sequence: stopSequence },
+        usage: { output_tokens: estimateTokens(accumulatedText) },
       });
 
       // Send message_stop
@@ -279,8 +474,32 @@ function generateChatId(): string {
   return id;
 }
 
-function zoToOpenAI(zoOutput: string, model: string): OpenAIChatResponse {
-  const tokens = Math.ceil(zoOutput.length / 4);
+function zoToOpenAI(
+  zoOutput: string,
+  model: string,
+  req: OpenAIChatRequest,
+  inputText: string,
+): OpenAIChatResponse {
+  let text = zoOutput;
+  let finishReason: 'stop' | 'length' = 'stop';
+
+  // Honor stop sequences client-side, since the Zo backend does not.
+  const stopList = typeof req.stop === 'string'
+    ? [req.stop]
+    : Array.isArray(req.stop) ? req.stop : undefined;
+  const stopResult = applyStopSequences(text, stopList);
+  if (stopResult.matched) {
+    text = stopResult.text;
+  }
+
+  const maxResult = applyMaxTokens(text, req.max_tokens);
+  if (maxResult.truncated) {
+    text = maxResult.text;
+    finishReason = 'length';
+  }
+
+  const promptTokens = estimateTokens(inputText);
+  const completionTokens = estimateTokens(text);
   return {
     id: generateChatId(),
     object: 'chat.completion',
@@ -288,10 +507,14 @@ function zoToOpenAI(zoOutput: string, model: string): OpenAIChatResponse {
     model,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: zoOutput },
-      finish_reason: 'stop',
+      message: { role: 'assistant', content: text },
+      finish_reason: finishReason,
     }],
-    usage: { prompt_tokens: 0, completion_tokens: tokens, total_tokens: tokens },
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+    },
   };
 }
 
@@ -301,6 +524,7 @@ export async function forwardOpenAINonStreaming(
 ): Promise<OpenAIChatResponse> {
   const zoReq = openaiToZo(req);
   zoReq.stream = false;
+  const inputText = zoReq.input;
 
   const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
     method: 'POST',
@@ -310,11 +534,11 @@ export async function forwardOpenAINonStreaming(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`Zo API error ${resp.status}: ${body}`);
+    throw new UpstreamError(resp.status, body);
   }
 
   const zoResp = (await resp.json()) as { output: string };
-  return zoToOpenAI(zoResp.output, req.model);
+  return zoToOpenAI(zoResp.output, req.model, req, inputText);
 }
 
 export function buildOpenAIStreamingResponse(
@@ -325,6 +549,10 @@ export function buildOpenAIStreamingResponse(
   zoReq.stream = true;
   const model = req.model;
   const chatId = generateChatId();
+  const maxChars = req.max_tokens && req.max_tokens > 0 ? req.max_tokens * 4 : Infinity;
+  const stopList = typeof req.stop === 'string'
+    ? [req.stop]
+    : Array.isArray(req.stop) ? req.stop.filter((s) => !!s) : [];
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -335,6 +563,9 @@ export function buildOpenAIStreamingResponse(
   };
 
   (async () => {
+    let accumulatedText = '';
+    let finishReason: 'stop' | 'length' = 'stop';
+
     try {
       const startChunk: OpenAIStreamChunk = {
         id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
@@ -361,8 +592,9 @@ export function buildOpenAIStreamingResponse(
       const decoder = new TextDecoder();
       let buffer = '';
       let eventType = '';
+      let shouldStop = false;
 
-      while (true) {
+      while (!shouldStop) {
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -371,6 +603,7 @@ export function buildOpenAIStreamingResponse(
         buffer = lines.pop() || '';
 
         for (const line of lines) {
+          if (shouldStop) break;
           if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim();
           } else if (line.startsWith('data: ') && eventType) {
@@ -383,11 +616,29 @@ export function buildOpenAIStreamingResponse(
                 text = data.delta.content_delta;
               }
               if (text) {
-                const chunk: OpenAIStreamChunk = {
-                  id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-                  model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-                };
-                await writeSSE(JSON.stringify(chunk));
+                let toEmit = text;
+                if (accumulatedText.length + toEmit.length > maxChars) {
+                  toEmit = toEmit.slice(0, Math.max(0, maxChars - accumulatedText.length));
+                  finishReason = 'length';
+                  shouldStop = true;
+                }
+                if (toEmit) {
+                  accumulatedText += toEmit;
+                  const chunk: OpenAIStreamChunk = {
+                    id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+                    model, choices: [{ index: 0, delta: { content: toEmit }, finish_reason: null }],
+                  };
+                  await writeSSE(JSON.stringify(chunk));
+                }
+                if (!shouldStop && stopList.length > 0) {
+                  for (const seq of stopList) {
+                    if (accumulatedText.indexOf(seq) !== -1) {
+                      shouldStop = true;
+                      // finish_reason stays 'stop' for stop-sequence hits per OpenAI spec.
+                      break;
+                    }
+                  }
+                }
               }
             } catch { /* skip malformed */ }
             eventType = '';
@@ -395,9 +646,11 @@ export function buildOpenAIStreamingResponse(
         }
       }
 
+      try { reader.cancel(); } catch { /* ignore */ }
+
       const endChunk: OpenAIStreamChunk = {
         id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-        model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        model, choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
       };
       await writeSSE(JSON.stringify(endChunk));
       await writeSSE('[DONE]');
