@@ -108,6 +108,7 @@ export interface OpenAIChatRequest {
   temperature?: number;
   top_p?: number;
   stream?: boolean;
+  stream_options?: { include_usage?: boolean } | null;
   stop?: string | string[];
   tools?: OpenAITool[];
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
@@ -145,6 +146,11 @@ export interface OpenAIStreamChunk {
   created: number;
   model: string;
   choices: OpenAIStreamChoice[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  } | null;
 }
 
 export interface OpenAIChatResponse {
