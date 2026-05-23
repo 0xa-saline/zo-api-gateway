@@ -227,7 +227,8 @@ export default {
 
       const tokens = await getTokens(env.KV);
       const results: Array<{
-        token: string;
+        tokenId: string;
+        maskedToken: string;
         email: string;
         valid: boolean;
         httpStatus: number;
@@ -244,7 +245,8 @@ export default {
           await updateTokenStatus(env.KV, t.token, 'invalid', `auto-check: HTTP ${check.httpStatus}`);
         }
         results.push({
-          token: t.token,
+          tokenId: tokenToId(t.token),
+          maskedToken: maskToken(t.token),
           email: t.email || '',
           valid: check.valid,
           httpStatus: check.httpStatus,

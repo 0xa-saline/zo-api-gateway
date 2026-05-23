@@ -1,4 +1,25 @@
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeJsStringLiteral(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/<\//g, '<\\/');
+}
+
 export function getAdminHTML(baseUrl: string): string {
+  const safeBaseUrl = escapeHtmlText(baseUrl);
+  const safeBaseUrlJs = escapeJsStringLiteral(baseUrl);
+
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -171,7 +192,7 @@ export function getAdminHTML(baseUrl: string): string {
       <label>Gateway Key</label>
       <input type="password" id="login-key" placeholder="\u8f93\u5165\u7ba1\u7406\u5bc6\u94a5" autofocus>
     </div>
-    <label class="remember"><input type="checkbox" id="remember-me" checked> \u8bb0\u4f4f\u767b\u5f55\u72b6\u6001</label>
+    <label class="remember"><input type="checkbox" id="remember-me" checked> \u4ec5\u672c\u4f1a\u8bdd\u8bb0\u4f4f\u767b\u5f55\u72b6\u6001</label>
     <button class="btn btn-primary btn-block" onclick="login()">\u767b\u5f55</button>
   </div>
 </div>
@@ -278,7 +299,7 @@ export function getAdminHTML(baseUrl: string): string {
       <div class="card">
         <h3>API \u7aef\u70b9</h3>
         <div class="info-grid">
-          <div class="info-item"><div class="label">Base URL</div><div class="val">${baseUrl}</div></div>
+          <div class="info-item"><div class="label">Base URL</div><div class="val">${safeBaseUrl}</div></div>
           <div class="info-item"><div class="label">Anthropic \u517c\u5bb9</div><div class="val">/v1/messages</div></div>
           <div class="info-item"><div class="label">OpenAI \u517c\u5bb9</div><div class="val">/v1/chat/completions</div></div>
           <div class="info-item"><div class="label">\u6a21\u578b\u5217\u8868</div><div class="val">/v1/models</div></div>
@@ -300,7 +321,7 @@ export function getAdminHTML(baseUrl: string): string {
       </div>
       <div class="card">
         <h3>OpenAI \u683c\u5f0f (\u901a\u7528)</h3>
-        <div class="code-box">curl -s ${baseUrl}/v1/chat/completions \\
+        <div class="code-box">curl -s ${safeBaseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
@@ -310,7 +331,7 @@ export function getAdminHTML(baseUrl: string): string {
       </div>
       <div class="card">
         <h3>Anthropic \u683c\u5f0f</h3>
-        <div class="code-box">curl -s ${baseUrl}/v1/messages \\
+        <div class="code-box">curl -s ${safeBaseUrl}/v1/messages \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
@@ -321,14 +342,14 @@ export function getAdminHTML(baseUrl: string): string {
       </div>
       <div class="card">
         <h3>Claude Code \u914d\u7f6e</h3>
-        <div class="code-box">export ANTHROPIC_BASE_URL=${baseUrl}
+        <div class="code-box">export ANTHROPIC_BASE_URL=${safeBaseUrl}
 export ANTHROPIC_API_KEY=\u4f60\u7684GatewayKey
 
 claude</div>
       </div>
       <div class="card">
         <h3>\u8fdc\u7a0b\u5bfc\u5165 Token\uff08\u811a\u672c/\u63d2\u4ef6\u7528\uff09</h3>
-        <div class="code-box">curl -X POST ${baseUrl}/admin/tokens \\
+        <div class="code-box">curl -X POST ${safeBaseUrl}/admin/tokens \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
   -d '{
@@ -362,8 +383,21 @@ claude</div>
 </div>
 
 <script>
-const BASE = '${baseUrl}';
+const BASE = '${safeBaseUrlJs}';
 let authKey = '';
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function toInlineJsArg(value) {
+  return escapeHtml(JSON.stringify(String(value)));
+}
 const PAGE_SIZE = 10;
 let tokenPage = 1;
 let recentPage = 1;
@@ -429,7 +463,7 @@ function renderPagination(containerId, total, currentPage, onPageChange) {
 
 // Auto login
 (function tryAutoLogin() {
-  const saved = localStorage.getItem('zo_gw_key');
+  const saved = sessionStorage.getItem('zo_gw_key');
   if (saved) {
     authKey = saved;
     api('GET', '/admin/tokens').then(() => {
@@ -437,7 +471,7 @@ function renderPagination(containerId, total, currentPage, onPageChange) {
       document.getElementById('app').style.display = 'flex';
       loadDashboard();
     }).catch(() => {
-      localStorage.removeItem('zo_gw_key');
+      sessionStorage.removeItem('zo_gw_key');
     });
   }
 })();
@@ -448,7 +482,9 @@ async function login() {
   try {
     await api('GET', '/admin/tokens');
     if (document.getElementById('remember-me').checked) {
-      localStorage.setItem('zo_gw_key', authKey);
+      sessionStorage.setItem('zo_gw_key', authKey);
+    } else {
+      sessionStorage.removeItem('zo_gw_key');
     }
     document.getElementById('login-view').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
@@ -458,7 +494,7 @@ async function login() {
 
 function logout() {
   authKey = '';
-  localStorage.removeItem('zo_gw_key');
+  sessionStorage.removeItem('zo_gw_key');
   document.getElementById('app').style.display = 'none';
   document.getElementById('login-view').style.display = 'flex';
   document.getElementById('login-key').value = '';
@@ -563,8 +599,8 @@ function renderRecent() {
   tbody.innerHTML = page.map(t => {
     const st = t.enabled ? '<span class="badge badge-on">\u542f\u7528</span>' : '<span class="badge badge-off">\u7981\u7528</span>';
     return \`<tr>
-      <td class="token-mono">\${t.email || '-'}</td>
-      <td>\${t.spaceName || '-'}</td>
+      <td class="token-mono">\${escapeHtml(t.email || '-')}</td>
+      <td>\${escapeHtml(t.spaceName || '-')}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
     </tr>\`;
@@ -581,7 +617,7 @@ function goTokenPage(p) {
 
 function statusBadge(t) {
   if (t.status === 'valid') return '<span class="badge badge-valid">\u6709\u6548</span>';
-  if (t.status === 'invalid') return '<span class="badge badge-invalid">\u5931\u6548</span>' + (t.disableReason ? '<div class="disable-reason">' + t.disableReason + '</div>' : '');
+  if (t.status === 'invalid') return '<span class="badge badge-invalid">\u5931\u6548</span>' + (t.disableReason ? '<div class="disable-reason">' + escapeHtml(t.disableReason) + '</div>' : '');
   return '<span class="badge badge-unchecked">\u672a\u68c0\u6d4b</span>';
 }
 
@@ -599,22 +635,25 @@ function renderTokenList() {
   const page = allTokens.slice(start, start + PAGE_SIZE);
   tbody.innerHTML = page.map(t => {
     const st = t.enabled ? '<span class="badge badge-on">\u542f\u7528</span>' : '<span class="badge badge-off">\u7981\u7528</span>';
-    const tid = t.tokenId;
+    const tid = String(t.tokenId || '');
+    const inlineTid = toInlineJsArg(tid);
+    const inlineEmail = toInlineJsArg(t.email || '');
+    const inlineSpaceName = toInlineJsArg(t.spaceName || '');
     const tBtn = t.enabled
-      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk('\${tid}',false)">\u7981\u7528</button>\`
-      : \`<button class="btn btn-success btn-sm" onclick="toggleTk('\${tid}',true)">\u542f\u7528</button>\`;
+      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk(\${inlineTid}, false)">\u7981\u7528</button>\`
+      : \`<button class="btn btn-success btn-sm" onclick="toggleTk(\${inlineTid}, true)">\u542f\u7528</button>\`;
     return \`<tr>
-      <td class="token-mono">\${t.email || '-'}</td>
-      <td>\${t.spaceName || '-'}</td>
-      <td class="token-mono">\${t.maskedToken}</td>
+      <td class="token-mono">\${escapeHtml(t.email || '-')}</td>
+      <td>\${escapeHtml(t.spaceName || '-')}</td>
+      <td class="token-mono">\${escapeHtml(t.maskedToken || '')}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
       <td>\${statusBadge(t)}\${lastCheckedText(t)}</td>
       <td><div class="actions-cell">
-        <button class="btn btn-outline btn-sm" onclick="openEdit('\${tid}','\${(t.email||'').replace(/'/g,"\\\\'")}',' \${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
-        <button class="btn btn-outline btn-sm" onclick="checkSingle('\${tid}')">\u68c0\u6d4b</button>
+        <button class="btn btn-outline btn-sm" onclick="openEdit(\${inlineTid}, \${inlineEmail}, \${inlineSpaceName})">编辑</button>
+        <button class="btn btn-outline btn-sm" onclick="checkSingle(\${inlineTid})">\u68c0\u6d4b</button>
         \${tBtn}
-        <button class="btn btn-danger btn-sm" onclick="removeTk('\${tid}')">删除</button>
+        <button class="btn btn-danger btn-sm" onclick="removeTk(\${inlineTid})">删除</button>
       </div></td>
     </tr>\`;
   }).join('');
