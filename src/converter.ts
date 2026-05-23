@@ -152,6 +152,7 @@ export function buildStreamingResponse(
       const decoder = new TextDecoder();
       let buffer = '';
       let outputTokens = 0;
+      let eventType = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -161,7 +162,6 @@ export function buildStreamingResponse(
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        let eventType = '';
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim();
@@ -183,8 +183,6 @@ export function buildStreamingResponse(
                   index: 0,
                   delta: { type: 'text_delta', text: data.delta.content_delta },
                 });
-              } else if (eventType === 'FrontendModelResponse' && data.parts) {
-                // Legacy: final aggregated response
               } else if (eventType === 'End') {
                 // Stream completed
               } else if (eventType === 'Error') {
@@ -362,6 +360,7 @@ export function buildOpenAIStreamingResponse(
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let eventType = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -371,7 +370,6 @@ export function buildOpenAIStreamingResponse(
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        let eventType = '';
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim();
