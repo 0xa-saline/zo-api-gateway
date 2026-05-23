@@ -298,6 +298,22 @@ export default {
       return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 
+    // Admin API - cache test (write + read roundtrip)
+    if (url.pathname === '/admin/cache-test' && request.method === 'POST') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+      try {
+        const testKey = buildCacheKey('test-model', [{ role: 'user', content: 'cache-test' }]);
+        const testData = JSON.stringify({ test: true, ts: Date.now() });
+        await setCache(env.KV, testKey, testData, 'test-model', 300);
+        const readBack = await getCache(env.KV, testKey);
+        return jsonResponse({ ok: true, written: testData, read_back: readBack, match: readBack === testData });
+      } catch (e) {
+        return jsonResponse({ ok: false, error: (e as Error).message, stack: (e as Error).stack }, 500);
+      }
+    }
+
     // Anthropic Messages endpoint
     if (url.pathname === '/v1/messages' && request.method === 'POST') {
       const clientKey = extractClientKey(request);
@@ -452,15 +468,18 @@ export default {
 
           const result = await forwardOpenAINonStreaming(body, token);
           markSuccess(token);
-          ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}));
 
-          // Cache the result
+          // Cache the result and log (await to ensure completion)
+          const responseJson = JSON.stringify(result);
           if (env.KV) {
             const cacheKey = buildCacheKey(body.model, body.messages);
-            ctx.waitUntil(setCache(env.KV, cacheKey, JSON.stringify(result), body.model, cacheTtl).catch(() => {}));
+            await Promise.all([
+              addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}),
+              setCache(env.KV, cacheKey, responseJson, body.model, cacheTtl).catch(() => {}),
+            ]);
           }
 
-          return new Response(JSON.stringify(result), {
+          return new Response(responseJson, {
             headers: { 'Content-Type': 'application/json', ...corsHeaders() },
           });
         } catch (err) {
