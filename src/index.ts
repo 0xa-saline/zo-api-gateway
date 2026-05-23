@@ -1,4 +1,4 @@
-import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse } from './converter';
+import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming, buildOpenAIStreamingResponse, UpstreamError } from './converter';
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken } from './token-store';
@@ -338,8 +338,9 @@ export default {
           });
         } catch (err) {
           const message = (err as Error).message || 'Internal server error';
-          const isAuthError = message.includes('401') || message.includes('403');
-          const isRetryable = isAuthError || message.includes('429');
+          const upstreamStatus = err instanceof UpstreamError ? err.status : 0;
+          const isAuthError = upstreamStatus === 401 || upstreamStatus === 403;
+          const isRetryable = isAuthError || upstreamStatus === 429;
 
           if (isAuthError && env.KV) {
             autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
@@ -351,9 +352,9 @@ export default {
           }
 
           addLog(env.KV, body.model, 'anthropic', 'error', Date.now() - startTime, message).catch(() => {});
-          const status = message.includes('401') ? 401
-            : message.includes('429') ? 429
-            : message.includes('403') ? 403
+          const status = upstreamStatus === 401 ? 401
+            : upstreamStatus === 429 ? 429
+            : upstreamStatus === 403 ? 403
             : 502;
           return errorResponse(status, 'api_error', message);
         }
@@ -421,8 +422,9 @@ export default {
           });
         } catch (err) {
           const message = (err as Error).message || 'Internal server error';
-          const isAuthError = message.includes('401') || message.includes('403');
-          const isRetryable = isAuthError || message.includes('429');
+          const upstreamStatus = err instanceof UpstreamError ? err.status : 0;
+          const isAuthError = upstreamStatus === 401 || upstreamStatus === 403;
+          const isRetryable = isAuthError || upstreamStatus === 429;
 
           if (isAuthError && env.KV) {
             autoDisableToken(env.KV, token, `request-error: ${message}`).catch(() => {});
@@ -434,9 +436,9 @@ export default {
           }
 
           addLog(env.KV, body.model, 'openai', 'error', Date.now() - startTime, message).catch(() => {});
-          const status = message.includes('401') ? 401
-            : message.includes('429') ? 429
-            : message.includes('403') ? 403
+          const status = upstreamStatus === 401 ? 401
+            : upstreamStatus === 429 ? 429
+            : upstreamStatus === 403 ? 403
             : 502;
           return errorResponse(status, 'api_error', message);
         }

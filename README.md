@@ -187,6 +187,63 @@ print(message.content[0].text)
 
 传入的 model 名会自动加上 `anthropic:` 前缀路由到 Zo。
 
+## 已知限制（重要，使用前请读）
+
+本网关本质上是 **Zo Computer `/zo/ask` 接口 ↔ Anthropic Messages API 的协议适配层**，不是高保真 Anthropic 透传代理。上游 Zo `/zo/ask` 是一个"摊平字符串进、摊平字符串出"的 agentic 端点，无法暴露 Anthropic 原生协议的所有语义，所以以下能力**无法**做到与官方 Anthropic API 等效：
+
+### 模型人格 / 行为差异
+
+上游 Zo 平台在调用 Claude 时会**自动注入一段 Zo agentic assistant 的 persona system prompt** 并启用平台自带的工具能力（联网、文件、代码等）。所以即便客户端调用的是 `claude-opus-4-7`，模型也会以"我是 Zo，你的个人云端电脑助手"的身份回答，并可能在没明确请求的情况下使用工具。这与裸 Claude API 的默认行为差异显著。
+
+→ 如果你需要"原生 Claude 行为"，请在 Zo 平台创建一个**无 system prompt、不挂工具的 persona**，然后在请求里通过 `metadata.persona_id` 传入该 persona id：
+
+```bash
+curl -s https://YOUR_WORKER_URL/v1/messages \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -d '{
+    "model": "claude-opus-4-7",
+    "messages": [{"role":"user","content":"你好"}],
+    "metadata": {"persona_id": "你的 raw persona id"}
+  }'
+```
+
+### 客户端 `system` 字段是**尽力而为**
+
+由于上游只接受 `input: string`，本网关会把客户端的 `system` 字段以 `[System]\n...` 文本前缀的方式拼到对话开头送给 Zo。**这不是真正的 system 通道**，模型有概率识别出这是"对话内容里的指令"并**主动选择不遵守**（已实测）。需要可靠 system 行为请走上面的 `persona_id` 路径。
+
+### 不支持的功能
+
+| 功能 | 状态 | 备注 |
+|---|---|---|
+| 多模态输入 (`image` content block) | **静默丢弃** | `/zo/ask` 不接受图片，图片在网关层被过滤 |
+| Tool use / tool_result | **不支持** | 类型上没有，请求里有也会被丢 |
+| Extended thinking（`thinking` 参数）| **请求侧不透传** | Zo 后端无对应入口；网关响应侧已**预留** thinking part_kind → Anthropic `thinking` content_block 的转换，一旦上游开始透出会自动生效 |
+| `tools` / `tool_choice` | **不支持** | 同上 |
+
+### 响应元数据是估算/重建的，不是上游透传
+
+以下字段**不是**上游真实值，而是由网关基于响应文本估算/合成的：
+
+| 字段 | 实际来源 |
+|---|---|
+| `id` | 网关随机生成 (`msg_xxx`) |
+| `model`（响应字段） | 客户端传入的 model 名（即使上游路由到别的模型也无从察觉） |
+| `usage.input_tokens` / `usage.output_tokens` | `Math.ceil(text.length / 4)` 估算；非真实 tokenizer 计数 |
+| `stop_reason` | 在网关层根据 `max_tokens` / `stop_sequences` 是否触发判断；如果都没触发则为 `end_turn` |
+
+### 网关层兜底实现
+
+下列 Anthropic 参数上游 Zo 不接受，但**网关已在收到响应后做客户端侧兜底**：
+
+- `max_tokens` — 网关按 `max_tokens * 4` 字符为上限截断输出，并把 `stop_reason` 改成 `max_tokens` (`finish_reason: length`)
+- `stop_sequences`（OpenAI 的 `stop`）— 网关在输出文本里扫描，最早命中处截断，并把 `stop_reason` 改成 `stop_sequence`
+
+`temperature` / `top_p` / `top_k` 由于不影响上游生成，目前只能被忽略。
+
+### 上游 Zo 服务稳定性
+
+Zo `/zo/ask` 偶发 5xx，网关会原样向客户端返回 502 + 上游原文。这是上游服务问题，不在本网关可修复范围内。
+
 ## License
 
 MIT

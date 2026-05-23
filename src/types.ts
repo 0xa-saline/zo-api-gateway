@@ -6,13 +6,19 @@ export interface AnthropicMessage {
 }
 
 export interface AnthropicContentBlock {
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'thinking';
   text?: string;
+  thinking?: string;
   source?: {
     type: string;
     media_type: string;
     data: string;
   };
+}
+
+export interface AnthropicThinkingConfig {
+  type: 'enabled' | 'disabled';
+  budget_tokens?: number;
 }
 
 export interface AnthropicRequest {
@@ -25,6 +31,7 @@ export interface AnthropicRequest {
   top_k?: number;
   stream?: boolean;
   stop_sequences?: string[];
+  thinking?: AnthropicThinkingConfig;
   metadata?: Record<string, unknown>;
 }
 
