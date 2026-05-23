@@ -599,21 +599,22 @@ function renderTokenList() {
   const page = allTokens.slice(start, start + PAGE_SIZE);
   tbody.innerHTML = page.map(t => {
     const st = t.enabled ? '<span class="badge badge-on">\u542f\u7528</span>' : '<span class="badge badge-off">\u7981\u7528</span>';
+    const tid = t.tokenId;
     const tBtn = t.enabled
-      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk('\${t.token}',false)">\u7981\u7528</button>\`
-      : \`<button class="btn btn-success btn-sm" onclick="toggleTk('\${t.token}',true)">\u542f\u7528</button>\`;
+      ? \`<button class="btn btn-outline btn-sm" onclick="toggleTk('\${tid}',false)">\u7981\u7528</button>\`
+      : \`<button class="btn btn-success btn-sm" onclick="toggleTk('\${tid}',true)">\u542f\u7528</button>\`;
     return \`<tr>
       <td class="token-mono">\${t.email || '-'}</td>
       <td>\${t.spaceName || '-'}</td>
-      <td class="token-mono">\${mask(t.token)}</td>
+      <td class="token-mono">\${t.maskedToken}</td>
       <td style="color:#a8a29e">\${new Date(t.addedAt).toLocaleDateString('zh-CN')}</td>
       <td>\${st}</td>
       <td>\${statusBadge(t)}\${lastCheckedText(t)}</td>
       <td><div class="actions-cell">
-        <button class="btn btn-outline btn-sm" onclick="openEdit('\${t.token}','\${(t.email||'').replace(/'/g,"\\\\'")}',' \${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
-        <button class="btn btn-outline btn-sm" onclick="checkSingle('\${t.token}')">\u68c0\u6d4b</button>
+        <button class="btn btn-outline btn-sm" onclick="openEdit('\${tid}','\${(t.email||'').replace(/'/g,"\\\\'")}',' \${(t.spaceName||'').replace(/'/g,"\\\\'")}')">编辑</button>
+        <button class="btn btn-outline btn-sm" onclick="checkSingle('\${tid}')">\u68c0\u6d4b</button>
         \${tBtn}
-        <button class="btn btn-danger btn-sm" onclick="removeTk('\${t.token}')">删除</button>
+        <button class="btn btn-danger btn-sm" onclick="removeTk('\${tid}')">删除</button>
       </div></td>
     </tr>\`;
   }).join('');
@@ -664,8 +665,8 @@ async function bulkAdd() {
 }
 
 // Edit modal
-function openEdit(token, email, spaceName) {
-  document.getElementById('edit-token-id').value = token;
+function openEdit(tokenId, email, spaceName) {
+  document.getElementById('edit-token-id').value = tokenId;
   document.getElementById('edit-email').value = email;
   document.getElementById('edit-space').value = spaceName;
   document.getElementById('edit-modal').classList.remove('hidden');
@@ -676,25 +677,25 @@ function closeEditModal() {
 }
 
 async function saveEdit() {
-  const token = document.getElementById('edit-token-id').value;
+  const tokenId = document.getElementById('edit-token-id').value;
   const email = document.getElementById('edit-email').value.trim();
   const spaceName = document.getElementById('edit-space').value.trim();
   try {
-    await api('PATCH', '/admin/tokens', { token, email, spaceName });
+    await api('PATCH', '/admin/tokens', { tokenId, email, spaceName });
     toast('\u4fdd\u5b58\u6210\u529f');
     closeEditModal();
     loadTokens();
   } catch (e) { toast(e.message, false); }
 }
 
-async function removeTk(token) {
+async function removeTk(tokenId) {
   if (!confirm('\u786e\u5b9a\u5220\u9664\uff1f')) return;
-  try { await api('DELETE', '/admin/tokens', { token }); toast('\u5df2\u5220\u9664'); loadTokens(); }
+  try { await api('DELETE', '/admin/tokens', { tokenId }); toast('\u5df2\u5220\u9664'); loadTokens(); }
   catch (e) { toast(e.message, false); }
 }
 
-async function toggleTk(token, enabled) {
-  try { await api('PATCH', '/admin/tokens', { token, enabled }); toast(enabled ? '\u5df2\u542f\u7528' : '\u5df2\u7981\u7528'); loadTokens(); }
+async function toggleTk(tokenId, enabled) {
+  try { await api('PATCH', '/admin/tokens', { tokenId, enabled }); toast(enabled ? '\u5df2\u542f\u7528' : '\u5df2\u7981\u7528'); loadTokens(); }
   catch (e) { toast(e.message, false); }
 }
 
@@ -717,10 +718,10 @@ async function checkAllTokens() {
   btn.innerHTML = '\u26a1 \u4e00\u952e\u68c0\u6d4b\u72b6\u6001';
 }
 
-async function checkSingle(token) {
+async function checkSingle(tokenId) {
   toast('\u6b63\u5728\u68c0\u6d4b...');
   try {
-    const data = await api('POST', '/admin/check-token', { token });
+    const data = await api('POST', '/admin/check-token', { tokenId });
     const msg = data.valid ? '\u6709\u6548' : '\u5931\u6548';
     toast('\u68c0\u6d4b\u7ed3\u679c: ' + msg, data.valid);
     loadTokens();
