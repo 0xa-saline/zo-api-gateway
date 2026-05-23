@@ -67,9 +67,32 @@ export interface ZoAskResponse {
 
 // OpenAI Chat Completions API types
 
+export interface OpenAIFunctionDef {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface OpenAITool {
+  type: 'function';
+  function: OpenAIFunctionDef;
+}
+
+export interface OpenAIToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 export interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface OpenAIChatRequest {
@@ -80,12 +103,42 @@ export interface OpenAIChatRequest {
   top_p?: number;
   stream?: boolean;
   stop?: string | string[];
+  tools?: OpenAITool[];
+  tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 }
 
 export interface OpenAIChatChoice {
   index: number;
   message: OpenAIMessage;
-  finish_reason: 'stop' | 'length' | null;
+  finish_reason: 'stop' | 'length' | 'tool_calls' | null;
+}
+
+export interface OpenAIStreamDelta {
+  role?: string;
+  content?: string | null;
+  tool_calls?: Array<{
+    index: number;
+    id?: string;
+    type?: 'function';
+    function?: {
+      name?: string;
+      arguments?: string;
+    };
+  }>;
+}
+
+export interface OpenAIStreamChoice {
+  index: number;
+  delta: OpenAIStreamDelta;
+  finish_reason: 'stop' | 'length' | 'tool_calls' | null;
+}
+
+export interface OpenAIStreamChunk {
+  id: string;
+  object: 'chat.completion.chunk';
+  created: number;
+  model: string;
+  choices: OpenAIStreamChoice[];
 }
 
 export interface OpenAIChatResponse {
@@ -99,25 +152,6 @@ export interface OpenAIChatResponse {
     completion_tokens: number;
     total_tokens: number;
   };
-}
-
-export interface OpenAIStreamDelta {
-  role?: string;
-  content?: string;
-}
-
-export interface OpenAIStreamChoice {
-  index: number;
-  delta: OpenAIStreamDelta;
-  finish_reason: 'stop' | 'length' | null;
-}
-
-export interface OpenAIStreamChunk {
-  id: string;
-  object: 'chat.completion.chunk';
-  created: number;
-  model: string;
-  choices: OpenAIStreamChoice[];
 }
 
 // Call log
