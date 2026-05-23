@@ -2,7 +2,7 @@ import { forwardNonStreaming, buildStreamingResponse, forwardOpenAINonStreaming,
 import { getAdminHTML } from './admin';
 import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import type { DispatchStrategy } from './key-pool';
-import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken } from './token-store';
+import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken, tokenToId, maskToken, findTokenById } from './token-store';
 import { getLogs, addLog } from './call-log';
 import { checkTokenValidity } from './key-checker';
 import { FAVICON_BASE64 } from './favicon';
@@ -165,7 +165,8 @@ export default {
         const poolConfig = await buildPoolConfig(env);
         const poolStatus = poolConfig ? getPoolStatus(poolConfig) : { total: 0, available: 0 };
         const safeTokens = tokens.map((t) => ({
-          token: t.token,
+          tokenId: tokenToId(t.token),
+          maskedToken: maskToken(t.token),
           email: t.email || '',
           spaceName: t.spaceName || '',
           addedAt: t.addedAt,
@@ -173,7 +174,6 @@ export default {
           lastChecked: t.lastChecked || null,
           status: t.status || 'unchecked',
           disableReason: t.disableReason || '',
-
         }));
         return jsonResponse({ tokens: safeTokens, pool_status: poolStatus });
       }
@@ -190,22 +190,24 @@ export default {
       }
 
       if (request.method === 'DELETE') {
-        const body = (await request.json()) as { token: string };
-        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
-        const tokens = await removeToken(env.KV, body.token);
+        const body = (await request.json()) as { token?: string; tokenId?: string };
+        const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
+        if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
+        const tokens = await removeToken(env.KV, rawToken);
         return jsonResponse({ ok: true, count: tokens.length });
       }
 
       if (request.method === 'PATCH') {
-        const body = (await request.json()) as { token: string; enabled?: boolean; email?: string; spaceName?: string };
-        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+        const body = (await request.json()) as { token?: string; tokenId?: string; enabled?: boolean; email?: string; spaceName?: string };
+        const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
+        if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
         if (body.enabled !== undefined) {
-          const tokens = await toggleToken(env.KV, body.token, body.enabled);
+          const tokens = await toggleToken(env.KV, rawToken, body.enabled);
           return jsonResponse({ ok: true, count: tokens.length });
         }
         if (body.email !== undefined || body.spaceName !== undefined) {
           try {
-            const tokens = await updateToken(env.KV, body.token, { email: body.email, spaceName: body.spaceName });
+            const tokens = await updateToken(env.KV, rawToken, { email: body.email, spaceName: body.spaceName });
             return jsonResponse({ ok: true, count: tokens.length });
           } catch (e) {
             return jsonResponse({ error: (e as Error).message }, 400);
@@ -267,15 +269,16 @@ export default {
         return jsonResponse({ error: 'Unauthorized' }, 401);
       }
 
-      const body = (await request.json()) as { token: string };
-      if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+      const body = (await request.json()) as { token?: string; tokenId?: string };
+      const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
+      if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
 
-      const validity = await checkTokenValidity(body.token);
+      const validity = await checkTokenValidity(rawToken);
 
       if (validity.valid) {
-        await updateTokenStatus(env.KV, body.token, 'valid');
+        await updateTokenStatus(env.KV, rawToken, 'valid');
       } else {
-        await updateTokenStatus(env.KV, body.token, 'invalid', `auto-check: HTTP ${validity.httpStatus}`);
+        await updateTokenStatus(env.KV, rawToken, 'invalid', `auto-check: HTTP ${validity.httpStatus}`);
       }
 
       return jsonResponse({
@@ -362,7 +365,7 @@ export default {
 
         try {
           if (body.stream) {
-            const resp = buildStreamingResponse(body, token);
+            const resp = await buildStreamingResponse(body, token);
             markSuccess(token);
             ctx.waitUntil(addLog(env.KV, body.model, 'anthropic', 'ok', Date.now() - startTime).catch(() => {}));
             return resp;
@@ -446,7 +449,7 @@ export default {
 
         try {
           if (body.stream) {
-            const resp = buildOpenAIStreamingResponse(body, token);
+            const resp = await buildOpenAIStreamingResponse(body, token);
             markSuccess(token);
             ctx.waitUntil(addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {}));
             return resp;

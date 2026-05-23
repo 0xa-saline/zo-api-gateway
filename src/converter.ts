@@ -621,19 +621,30 @@ export async function forwardNonStreaming(
   return zoToAnthropic(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
-export function buildStreamingResponse(
+export async function buildStreamingResponse(
   req: AnthropicRequest,
   token: string,
-): Response {
+): Promise<Response> {
   const { zoReq, inputText, toolDefs } = anthropicToZo(req);
   const hasTools = toolDefs.length > 0;
-  // When tools are present, use non-streaming to reliably parse structured output
   zoReq.stream = !hasTools;
   const model = req.model;
   const msgId = generateMessageId();
   const inputTokens = estimateTokens(inputText);
   const maxChars = req.max_tokens && req.max_tokens > 0 ? req.max_tokens * 4 : Infinity;
   const stopSequences = (req.stop_sequences || []).filter((s) => !!s);
+
+  // Fetch upfront so auth/rate-limit errors propagate to the retry loop
+  const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(zoReq),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new UpstreamError(resp.status, body);
+  }
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -644,7 +655,6 @@ export function buildStreamingResponse(
   };
 
   (async () => {
-    // When tools are present, use non-streaming: fetch full response, parse, emit structured SSE
     if (hasTools) {
       try {
         await write('message_start', {
@@ -656,26 +666,12 @@ export function buildStreamingResponse(
           },
         });
 
-        const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(zoReq),
-        });
-
-        if (!resp.ok) {
-          const body = await resp.text();
-          await write('error', { type: 'error', error: { type: 'api_error', message: `Zo API error ${resp.status}: ${body}` } });
-          await writer.close();
-          return;
-        }
-
         const zoResp = (await resp.json()) as { output: unknown };
         const rawParsed = parseZoStructuredOutput(zoResp.output);
         const parsed = normalizeForClient(rawParsed, toolDefs);
         const hasToolCalls = parsed.toolCalls.length > 0;
         let blockIndex = 0;
 
-        // Emit text block
         if (parsed.text) {
           await write('content_block_start', {
             type: 'content_block_start', index: blockIndex,
@@ -689,7 +685,6 @@ export function buildStreamingResponse(
           blockIndex++;
         }
 
-        // Emit tool_use blocks
         if (hasToolCalls) {
           for (const tc of parsed.toolCalls) {
             const toolId = `toolu_${generateToolUseId()}`;
@@ -776,7 +771,6 @@ export function buildStreamingResponse(
     };
 
     const emitTextDelta = async (chunk: string): Promise<boolean> => {
-      // Returns true if the stream should stop (max_tokens / stop_sequence hit).
       if (!chunk) return false;
       await openTextBlock();
 
@@ -804,7 +798,6 @@ export function buildStreamingResponse(
         delta: { type: 'text_delta', text: toEmit },
       });
 
-      // Check for stop_sequences against the accumulated text.
       if (stopSequences.length > 0) {
         let earliest = -1;
         let matched: string | null = null;
@@ -816,8 +809,6 @@ export function buildStreamingResponse(
           }
         }
         if (matched !== null && earliest !== -1) {
-          // Note: we already emitted past the stop_sequence in this delta — fidelity
-          // is best-effort because the upstream Zo backend does not honor stop_sequences.
           stopReason = 'stop_sequence';
           stopSequence = matched;
           return true;
@@ -837,7 +828,6 @@ export function buildStreamingResponse(
     };
 
     try {
-      // Send message_start
       await write('message_start', {
         type: 'message_start',
         message: {
@@ -851,23 +841,6 @@ export function buildStreamingResponse(
           usage: { input_tokens: inputTokens, output_tokens: 0 },
         },
       });
-
-      // Fetch streaming from Zo
-      const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(zoReq),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text();
-        await write('error', { type: 'error', error: { type: 'api_error', message: `Zo API error ${resp.status}: ${body}` } });
-        await writer.close();
-        return;
-      }
 
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
@@ -919,17 +892,13 @@ export function buildStreamingResponse(
         }
       }
 
-      // Best-effort: ask upstream to close. The reader.cancel() is ignored on errors.
       try { reader.cancel(); } catch { /* ignore */ }
 
-      // Close any open content_block
       if (textBlockOpen || thinkingBlockOpen) {
         await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
         textBlockOpen = false;
         thinkingBlockOpen = false;
       } else {
-        // Open and immediately close an empty text block so the SSE shape stays valid
-        // even for zero-output responses (e.g. upstream returned nothing).
         await write('content_block_start', {
           type: 'content_block_start',
           index: textIndex,
@@ -938,14 +907,12 @@ export function buildStreamingResponse(
         await write('content_block_stop', { type: 'content_block_stop', index: textIndex });
       }
 
-      // Send message_delta
       await write('message_delta', {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: stopSequence },
         usage: { output_tokens: estimateTokens(accumulatedText) },
       });
 
-      // Send message_stop
       await write('message_stop', { type: 'message_stop' });
 
       await writer.close();
@@ -1162,13 +1129,12 @@ export async function forwardOpenAINonStreaming(
   return zoToOpenAI(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
-export function buildOpenAIStreamingResponse(
+export async function buildOpenAIStreamingResponse(
   req: OpenAIChatRequest,
   token: string,
-): Response {
+): Promise<Response> {
   const { zoReq, toolDefs } = openaiToZo(req);
   const hasTools = toolDefs.length > 0;
-  // When tools are present, use non-streaming to reliably parse structured output
   zoReq.stream = !hasTools;
   const model = req.model;
   const chatId = generateChatId();
@@ -1178,6 +1144,18 @@ export function buildOpenAIStreamingResponse(
   const stopList = typeof req.stop === 'string'
     ? [req.stop]
     : Array.isArray(req.stop) ? req.stop.filter((s) => !!s) : [];
+
+  // Fetch upfront so auth/rate-limit errors propagate to the retry loop
+  const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(zoReq),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new UpstreamError(resp.status, body);
+  }
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -1194,21 +1172,6 @@ export function buildOpenAIStreamingResponse(
         model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       };
       await writeSSE(JSON.stringify(startChunk));
-
-      const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(zoReq),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text();
-        const errChunk = { error: { message: `Zo API error ${resp.status}: ${body}`, type: 'api_error' } };
-        await writeSSE(JSON.stringify(errChunk));
-        await writeSSE('[DONE]');
-        await writer.close();
-        return;
-      }
 
       if (hasTools) {
         // Non-streaming path for tool calls: read entire response, parse structured output, emit as SSE

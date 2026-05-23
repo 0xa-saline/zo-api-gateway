@@ -1,5 +1,19 @@
 const KV_KEY = 'zo_tokens';
 
+export function tokenToId(token: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) {
+    h ^= token.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return 'tid_' + (h >>> 0).toString(36);
+}
+
+export function maskToken(token: string): string {
+  if (token.length <= 8) return '****';
+  return token.slice(0, 6) + '...' + token.slice(-4);
+}
+
 export interface StoredToken {
   token: string;
   label: string;
@@ -126,4 +140,10 @@ export async function autoDisableToken(
 export async function getEnabledTokenStrings(kv: KVNamespace): Promise<string[]> {
   const tokens = await getTokens(kv);
   return tokens.filter((t) => t.enabled).map((t) => t.token);
+}
+
+export async function findTokenById(kv: KVNamespace, tokenId: string): Promise<string | null> {
+  const tokens = await getTokens(kv);
+  const t = tokens.find((t) => tokenToId(t.token) === tokenId);
+  return t ? t.token : null;
 }
