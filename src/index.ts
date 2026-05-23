@@ -4,8 +4,9 @@ import { pickToken, markFailed, markSuccess, getPoolStatus } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken } from './token-store';
 import { getLogs, addLog } from './call-log';
 import { checkTokenValidity } from './key-checker';
+import { buildCacheKey, getCache, setCache, clearCache, getCacheStats } from './cache';
 import { FAVICON_BASE64 } from './favicon';
-import type { AnthropicRequest, OpenAIChatRequest } from './types';
+import type { AnthropicRequest, OpenAIChatRequest, OpenAIChatResponse } from './types';
 import type { KeyPoolConfig } from './key-pool';
 
 interface Env {
@@ -13,6 +14,7 @@ interface Env {
   GATEWAY_KEY?: string;
   ZO_TOKENS?: string;
   COOLDOWN_MS?: string;
+  CACHE_TTL?: string;
 }
 
 const ZO_MODELS = [
@@ -280,6 +282,22 @@ export default {
       return jsonResponse({ logs });
     }
 
+    // Admin API - cache
+    if (url.pathname === '/admin/cache') {
+      if (!verifyAdmin(request, env)) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+      }
+      if (request.method === 'GET') {
+        const stats = await getCacheStats(env.KV);
+        return jsonResponse({ cache: stats });
+      }
+      if (request.method === 'DELETE') {
+        const deleted = await clearCache(env.KV);
+        return jsonResponse({ ok: true, deleted });
+      }
+      return jsonResponse({ error: 'Method not allowed' }, 405);
+    }
+
     // Anthropic Messages endpoint
     if (url.pathname === '/v1/messages' && request.method === 'POST') {
       const clientKey = extractClientKey(request);
@@ -397,8 +415,26 @@ export default {
         return errorResponse(400, 'invalid_request_error', 'model is required.');
       }
 
+      const cacheTtl = parseInt(env.CACHE_TTL || '3600', 10);
       const maxRetries = poolConfig ? poolConfig.tokens.length : 1;
       const startTime = Date.now();
+
+      // Check cache for non-streaming requests
+      if (!body.stream && env.KV) {
+        const cacheKey = buildCacheKey(body.model, body.messages);
+        const cached = await getCache(env.KV, cacheKey);
+        if (cached) {
+          const cachedResult = JSON.parse(cached) as OpenAIChatResponse;
+          // Mark all prompt tokens as cached
+          cachedResult.usage.prompt_tokens_details = {
+            cached_tokens: cachedResult.usage.prompt_tokens,
+          };
+          addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+          return new Response(JSON.stringify(cachedResult), {
+            headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+          });
+        }
+      }
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         const token = attempt === 0 ? zoToken : pickToken(poolConfig!);
@@ -417,6 +453,13 @@ export default {
           const result = await forwardOpenAINonStreaming(body, token);
           markSuccess(token);
           addLog(env.KV, body.model, 'openai', 'ok', Date.now() - startTime).catch(() => {});
+
+          // Cache the result
+          if (env.KV) {
+            const cacheKey = buildCacheKey(body.model, body.messages);
+            setCache(env.KV, cacheKey, JSON.stringify(result), body.model, cacheTtl).catch(() => {});
+          }
+
           return new Response(JSON.stringify(result), {
             headers: { 'Content-Type': 'application/json', ...corsHeaders() },
           });

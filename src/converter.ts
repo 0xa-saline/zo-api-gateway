@@ -1,4 +1,4 @@
-import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage, OpenAIContentPart } from './types';
+import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage, OpenAIContentPart, OpenAIUsage } from './types';
 
 const ZO_API_BASE = 'https://api.zo.computer';
 
@@ -690,6 +690,8 @@ export function buildOpenAIStreamingResponse(
   zoReq.stream = !hasTools;
   const model = req.model;
   const chatId = generateChatId();
+  const inputText = zoReq.input;
+  const includeUsage = req.stream_options?.include_usage === true;
   const maxChars = req.max_tokens && req.max_tokens > 0 ? req.max_tokens * 4 : Infinity;
   const stopList = typeof req.stop === 'string'
     ? [req.stop]
@@ -784,6 +786,16 @@ export function buildOpenAIStreamingResponse(
           };
           await writeSSE(JSON.stringify(endChunk));
         }
+        if (includeUsage) {
+          const promptTokens = estimateTokens(inputText);
+          const completionTokens = estimateTokens(text);
+          const usageChunk: OpenAIStreamChunk = {
+            id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+            model, choices: [],
+            usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+          };
+          await writeSSE(JSON.stringify(usageChunk));
+        }
         await writeSSE('[DONE]');
         await writer.close();
         return;
@@ -857,6 +869,16 @@ export function buildOpenAIStreamingResponse(
         model, choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
       };
       await writeSSE(JSON.stringify(endChunk));
+      if (includeUsage) {
+        const promptTokens = estimateTokens(inputText);
+        const completionTokens = estimateTokens(accumulatedText);
+        const usageChunk: OpenAIStreamChunk = {
+          id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+          model, choices: [],
+          usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+        };
+        await writeSSE(JSON.stringify(usageChunk));
+      }
       await writeSSE('[DONE]');
       await writer.close();
     } catch (err) {
