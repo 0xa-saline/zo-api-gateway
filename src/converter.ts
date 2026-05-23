@@ -235,8 +235,19 @@ interface ParsedZoOutput {
   toolCalls: ParsedToolCall[];
 }
 
-function parseZoStructuredOutput(output: string): ParsedZoOutput {
-  const trimmed = output.trim();
+function parseZoStructuredOutput(output: unknown): ParsedZoOutput {
+  if (output === null || output === undefined) {
+    return { text: '', toolCalls: [] };
+  }
+
+  // When output_format is set, Zo may return the output as a parsed JSON object
+  if (typeof output === 'object' && !Array.isArray(output)) {
+    return extractFromObject(output as Record<string, unknown>);
+  }
+
+  const str = String(output);
+  const trimmed = str.trim();
+  if (!trimmed) return { text: '', toolCalls: [] };
 
   // Fast path: exact JSON object
   if (trimmed.startsWith('{')) {
@@ -252,7 +263,7 @@ function parseZoStructuredOutput(output: string): ParsedZoOutput {
     return extractFromObject(candidates[candidates.length - 1] as Record<string, unknown>);
   }
 
-  return { text: output, toolCalls: [] };
+  return { text: str, toolCalls: [] };
 }
 
 function extractFromObject(obj: Record<string, unknown>): ParsedZoOutput {
@@ -424,13 +435,14 @@ export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inp
 }
 
 export function zoToAnthropic(
-  zoOutput: string,
+  zoOutput: unknown,
   model: string,
   req: AnthropicRequest,
   inputText: string,
   toolDefs: ToolDef[] = [],
 ): AnthropicResponse {
   const hasTools = toolDefs.length > 0;
+  const outputStr = stringifyOutput(zoOutput);
 
   if (hasTools) {
     const rawParsed = parseZoStructuredOutput(zoOutput);
@@ -452,7 +464,7 @@ export function zoToAnthropic(
       }
     }
     if (content.length === 0) {
-      content.push({ type: 'text', text: zoOutput || '' });
+      content.push({ type: 'text', text: outputStr });
     }
 
     return {
@@ -465,13 +477,13 @@ export function zoToAnthropic(
       stop_sequence: null,
       usage: {
         input_tokens: estimateTokens(inputText),
-        output_tokens: estimateTokens(zoOutput),
+        output_tokens: estimateTokens(outputStr),
       },
     };
   }
 
   // No tools — original text-only path
-  let text = zoOutput;
+  let text = outputStr;
   let stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' = 'end_turn';
   let stopSequence: string | null = null;
 
@@ -506,6 +518,12 @@ export function zoToAnthropic(
   };
 }
 
+function stringifyOutput(output: unknown): string {
+  if (output === null || output === undefined) return '';
+  if (typeof output === 'string') return output;
+  return JSON.stringify(output);
+}
+
 function generateToolUseId(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let id = '';
@@ -536,7 +554,7 @@ export async function forwardNonStreaming(
     throw new UpstreamError(resp.status, body);
   }
 
-  const zoResp = (await resp.json()) as { output: string };
+  const zoResp = (await resp.json()) as { output: unknown };
   return zoToAnthropic(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
@@ -588,7 +606,7 @@ export function buildStreamingResponse(
           return;
         }
 
-        const zoResp = (await resp.json()) as { output: string };
+        const zoResp = (await resp.json()) as { output: unknown };
         const rawParsed = parseZoStructuredOutput(zoResp.output);
         const parsed = normalizeForClient(rawParsed, toolDefs);
         const hasToolCalls = parsed.toolCalls.length > 0;
@@ -635,7 +653,7 @@ export function buildStreamingResponse(
           });
           await write('content_block_delta', {
             type: 'content_block_delta', index: blockIndex,
-            delta: { type: 'text_delta', text: zoResp.output || '' },
+            delta: { type: 'text_delta', text: stringifyOutput(zoResp.output) },
           });
           await write('content_block_stop', { type: 'content_block_stop', index: blockIndex });
         }
@@ -643,7 +661,7 @@ export function buildStreamingResponse(
         await write('message_delta', {
           type: 'message_delta',
           delta: { stop_reason: hasToolCalls ? 'tool_use' : 'end_turn', stop_sequence: null },
-          usage: { output_tokens: estimateTokens(zoResp.output) },
+          usage: { output_tokens: estimateTokens(stringifyOutput(zoResp.output)) },
         });
         await write('message_stop', { type: 'message_stop' });
         await writer.close();
@@ -972,14 +990,15 @@ function generateChatId(): string {
 }
 
 function zoToOpenAI(
-  zoOutput: string,
+  zoOutput: unknown,
   model: string,
   req: OpenAIChatRequest,
   inputText: string,
   toolDefs: ToolDef[] = [],
 ): OpenAIChatResponse {
+  const outputStr = stringifyOutput(zoOutput);
   const promptTokens = estimateTokens(inputText);
-  const completionTokens = estimateTokens(zoOutput);
+  const completionTokens = estimateTokens(outputStr);
   const hasTools = toolDefs.length > 0;
 
   if (hasTools) {
@@ -1022,7 +1041,7 @@ function zoToOpenAI(
   }
 
   // No tools — original text-only path
-  let text = zoOutput;
+  let text = outputStr;
   let finishReason: 'stop' | 'length' = 'stop';
 
   const stopList = typeof req.stop === 'string'
@@ -1076,7 +1095,7 @@ export async function forwardOpenAINonStreaming(
     throw new UpstreamError(resp.status, body);
   }
 
-  const zoResp = (await resp.json()) as { output: string };
+  const zoResp = (await resp.json()) as { output: unknown };
   return zoToOpenAI(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
@@ -1130,7 +1149,7 @@ export function buildOpenAIStreamingResponse(
 
       if (hasTools) {
         // Non-streaming path for tool calls: read entire response, parse structured output, emit as SSE
-        const zoResp = (await resp.json()) as { output: string };
+        const zoResp = (await resp.json()) as { output: unknown };
         const rawParsed = parseZoStructuredOutput(zoResp.output);
         const parsed = normalizeForClient(rawParsed, toolDefs);
         const hasToolCalls = parsed.toolCalls.length > 0;
@@ -1169,10 +1188,11 @@ export function buildOpenAIStreamingResponse(
           };
           await writeSSE(JSON.stringify(endChunk));
         } else {
-          if (!parsed.text && zoResp.output) {
+          const fallbackText = stringifyOutput(zoResp.output);
+          if (!parsed.text && fallbackText) {
             const contentChunk: OpenAIStreamChunk = {
               id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-              model, choices: [{ index: 0, delta: { content: zoResp.output }, finish_reason: null }],
+              model, choices: [{ index: 0, delta: { content: fallbackText }, finish_reason: null }],
             };
             await writeSSE(JSON.stringify(contentChunk));
           }
@@ -1184,7 +1204,7 @@ export function buildOpenAIStreamingResponse(
         }
         if (includeUsage) {
           const pTokens = estimateTokens(inputText);
-          const cTokens = estimateTokens(zoResp.output);
+          const cTokens = estimateTokens(stringifyOutput(zoResp.output));
           const usageChunk: OpenAIStreamChunk = {
             id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
             model, choices: [],
