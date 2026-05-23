@@ -1,4 +1,4 @@
-import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage, OpenAIContentPart, OpenAIUsage } from './types';
+import type { AnthropicRequest, AnthropicResponse, AnthropicContentBlock, AnthropicTool, ZoAskRequest, OpenAIChatRequest, OpenAIChatResponse, OpenAIStreamChunk, OpenAITool, OpenAIToolCall, OpenAIMessage, OpenAIContentPart, OpenAIUsage } from './types';
 
 const ZO_API_BASE = 'https://api.zo.computer';
 
@@ -51,11 +51,17 @@ function applyMaxTokens(
 
 function extractTextContent(content: string | AnthropicContentBlock[]): string {
   if (typeof content === 'string') return content;
-  // Only text blocks are forwarded to the Zo backend: it does not accept image
-  // or thinking blocks. See README "Known Limitations".
   return content
-    .filter((b) => b.type === 'text' && b.text)
-    .map((b) => b.text!)
+    .map((b) => {
+      if (b.type === 'text' && b.text) return b.text;
+      if (b.type === 'tool_use') return `[Tool Use: ${b.name}(${JSON.stringify(b.input)})]`;
+      if (b.type === 'tool_result') {
+        const rc = typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
+        return `[Tool Result (${b.tool_use_id}): ${rc}]`;
+      }
+      return '';
+    })
+    .filter(Boolean)
     .join('\n');
 }
 
@@ -110,6 +116,277 @@ function resolveZoModelName(model: string): string {
   return `anthropic:${model}`;
 }
 
+// =========================================================================
+//  TOOL HANDLING — output_format structured JSON approach
+//  Uses Zo's output_format with three required fields:
+//    text:      reasoning / explanation (always present)
+//    tool_name: which tool to call ("" if no tool)
+//    tool_args: JSON-stringified args ("" if no tool)
+// =========================================================================
+
+interface ToolDef {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+function normalizeToolDefs(tools: OpenAITool[] | AnthropicTool[]): ToolDef[] {
+  return tools.map((t) => {
+    if ('function' in t) {
+      const f = (t as OpenAITool).function;
+      return { name: f.name, description: f.description, parameters: f.parameters };
+    }
+    const a = t as AnthropicTool;
+    return { name: a.name, description: a.description, parameters: a.input_schema as unknown as Record<string, unknown> };
+  });
+}
+
+function injectTools(
+  input: string,
+  tools: ToolDef[],
+): { input: string; outputFormat: Record<string, unknown> | null } {
+  if (tools.length === 0) return { input, outputFormat: null };
+
+  const toolNames = tools.map((t) => t.name);
+
+  let desc = 'You have access to the following tools. To use a tool, set tool_name to the tool name and tool_args to a JSON string of its arguments. If no tool is needed, leave tool_name and tool_args as empty strings and put your answer in text.\n\nAvailable tools:\n';
+  for (const t of tools) {
+    const schema = t.parameters || {};
+    const props = (schema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
+    const required = ((schema as Record<string, unknown>).required || []) as string[];
+    const params = props ? Object.keys(props) : [];
+    const paramDescs = params.map((p) => {
+      const isReq = required.includes(p) ? ' (required)' : '';
+      const propDesc = props?.[p]?.description ? ` — ${props[p].description}` : '';
+      return `    ${p}${isReq}${propDesc}`;
+    }).join('\n');
+    desc += `\n  ${t.name}: ${t.description || ''}\n${paramDescs}\n`;
+  }
+
+  desc += '\nResponse rules:\n';
+  desc += '- The "text" field should contain a brief natural-language pre-tool message (1 short sentence).\n';
+  desc += '- If using a tool: set tool_name to one of [' + toolNames.map((n) => `"${n}"`).join(', ') + '] and tool_args to a JSON string containing ONLY the parameters defined above. Do NOT include extra fields like description, explanation, reason, note, or comment in tool_args.\n';
+  desc += '- HARD RULE: If the user asks to inspect, list, read, modify, run, execute, test, debug, check, search, or otherwise determine current external state (files, directories, code, terminal output, git status, environment, web state), you MUST use one of the client-provided tools. Never answer from hidden memory, hidden server state, or internal tools.\n';
+  desc += '- Use exact client tool names and parameter names. Never output internal names such as run_bash_command, list_files, read_file, grep_search, cmd, target_file, or path unless those exact names are present in the client tool schema.\n';
+  desc += '- If not using a tool: leave tool_name and tool_args as empty strings, and put the full answer in text.\n';
+  desc += '- Do not output anything outside the JSON structure.\n';
+
+  return {
+    input: desc + '\n---\nUser request:\n' + input,
+    outputFormat: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        tool_name: { type: 'string' },
+        tool_args: { type: 'string' },
+      },
+      required: ['text', 'tool_name', 'tool_args'],
+    },
+  };
+}
+
+// Extract JSON objects from messy model output
+function extractJsonObjects(text: string): unknown[] {
+  const objects: unknown[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const raw = text.slice(start, i + 1);
+        try { objects.push(JSON.parse(raw)); } catch { /* skip */ }
+        start = -1;
+      }
+      if (depth < 0) depth = 0;
+    }
+  }
+  return objects;
+}
+
+function isProxyOutputObject(obj: unknown): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  const o = obj as Record<string, unknown>;
+  return 'tool_name' in o || 'tool_args' in o || 'text' in o ||
+    ('name' in o && 'arguments' in o);
+}
+
+interface ParsedToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+interface ParsedZoOutput {
+  text: string;
+  toolCalls: ParsedToolCall[];
+}
+
+function parseZoStructuredOutput(output: string): ParsedZoOutput {
+  const trimmed = output.trim();
+
+  // Fast path: exact JSON object
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      return extractFromObject(obj);
+    } catch { /* fall through */ }
+  }
+
+  // Robust path: extract JSON objects from messy text
+  const candidates = extractJsonObjects(trimmed).filter(isProxyOutputObject);
+  if (candidates.length > 0) {
+    return extractFromObject(candidates[candidates.length - 1] as Record<string, unknown>);
+  }
+
+  return { text: output, toolCalls: [] };
+}
+
+function extractFromObject(obj: Record<string, unknown>): ParsedZoOutput {
+  // Handle nested JSON in text field
+  if (typeof obj.text === 'string') {
+    const inner = extractJsonObjects(obj.text).filter(isProxyOutputObject);
+    if (inner.length > 0) {
+      const parsed = extractFromObject(inner[inner.length - 1] as Record<string, unknown>);
+      if (parsed.toolCalls.length > 0) return parsed;
+    }
+  }
+
+  // Format A: {text, tool_name, tool_args}
+  if ('tool_name' in obj || 'tool_args' in obj) {
+    const text = typeof obj.text === 'string' ? obj.text : '';
+    const toolName = typeof obj.tool_name === 'string' ? obj.tool_name.trim() : '';
+    const toolArgsRaw = obj.tool_args || '';
+    if (toolName) {
+      let args: Record<string, unknown> = {};
+      if (typeof toolArgsRaw === 'string' && toolArgsRaw.trim()) {
+        try { args = JSON.parse(toolArgsRaw) as Record<string, unknown>; } catch { args = {}; }
+      } else if (typeof toolArgsRaw === 'object' && toolArgsRaw !== null && !Array.isArray(toolArgsRaw)) {
+        args = toolArgsRaw as Record<string, unknown>;
+      }
+      return { text, toolCalls: [{ name: toolName, arguments: args }] };
+    }
+    return { text, toolCalls: [] };
+  }
+
+  // Format B: {name, arguments}
+  if (typeof obj.name === 'string' && obj.arguments !== undefined) {
+    let args: Record<string, unknown> = {};
+    if (typeof obj.arguments === 'string') {
+      try { args = JSON.parse(obj.arguments) as Record<string, unknown>; } catch { args = {}; }
+    } else if (typeof obj.arguments === 'object' && obj.arguments !== null && !Array.isArray(obj.arguments)) {
+      args = obj.arguments as Record<string, unknown>;
+    }
+    const text = typeof obj.text === 'string' ? obj.text : '';
+    return { text, toolCalls: [{ name: obj.name, arguments: args }] };
+  }
+
+  if (typeof obj.text === 'string') return { text: obj.text, toolCalls: [] };
+  return { text: JSON.stringify(obj), toolCalls: [] };
+}
+
+function mapToolName(zoName: string, toolDefs: ToolDef[]): string {
+  if (!zoName || toolDefs.length === 0) return zoName;
+  // Exact match
+  for (const t of toolDefs) {
+    if (zoName === t.name) return t.name;
+  }
+  // Case-insensitive contains match
+  const zoLower = zoName.toLowerCase();
+  for (const t of toolDefs) {
+    const clientLower = t.name.toLowerCase();
+    if (zoLower.includes(clientLower) || clientLower.includes(zoLower)) return t.name;
+  }
+  return zoName;
+}
+
+function mapToolArgs(
+  args: Record<string, unknown>,
+  toolName: string,
+  toolDefs: ToolDef[],
+): Record<string, unknown> {
+  if (toolDefs.length === 0) return args;
+
+  for (const t of toolDefs) {
+    const schema = t.parameters || {};
+    const props = (schema as Record<string, unknown>).properties as Record<string, unknown> | undefined;
+    if (t.name === toolName && props) {
+      const clientParams = Object.keys(props);
+      const zoKeys = Object.keys(args);
+
+      // Exact-name match first
+      const filtered: Record<string, unknown> = {};
+      const used = new Set<string>();
+      for (const ck of clientParams) {
+        if (ck in args) { filtered[ck] = args[ck]; used.add(ck); }
+      }
+      if (Object.keys(filtered).length === clientParams.length) return filtered;
+
+      // Fuzzy match remaining
+      for (const ck of clientParams) {
+        if (ck in filtered) continue;
+        const ckLow = ck.toLowerCase();
+        for (const zk of zoKeys) {
+          if (used.has(zk)) continue;
+          const zkLow = zk.toLowerCase();
+          if (ckLow.includes(zkLow) || zkLow.includes(ckLow)) {
+            filtered[ck] = args[zk];
+            used.add(zk);
+            break;
+          }
+        }
+      }
+
+      // Positional fallback if same count
+      if (Object.keys(filtered).length === 0 && clientParams.length === zoKeys.length) {
+        for (let i = 0; i < clientParams.length; i++) {
+          filtered[clientParams[i]] = args[zoKeys[i]];
+        }
+      }
+
+      if (Object.keys(filtered).length > 0) return filtered;
+    }
+  }
+
+  // Strip noise fields as last resort
+  const noise = ['description', 'explanation', 'reason', 'note', 'comment'];
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (!noise.includes(k.toLowerCase())) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : args;
+}
+
+function normalizeForClient(
+  parsed: ParsedZoOutput,
+  toolDefs: ToolDef[],
+): ParsedZoOutput {
+  const out: ParsedZoOutput = { text: parsed.text, toolCalls: [] };
+  if (parsed.toolCalls.length > 0) {
+    for (const tc of parsed.toolCalls) {
+      const mappedName = mapToolName(tc.name, toolDefs);
+      out.toolCalls.push({
+        name: mappedName,
+        arguments: mapToolArgs(tc.arguments, mappedName, toolDefs),
+      });
+    }
+  }
+  return out;
+}
+
 function generateMessageId(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let id = 'msg_';
@@ -119,13 +396,22 @@ function generateMessageId(): string {
   return id;
 }
 
-export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inputText: string } {
+export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inputText: string; toolDefs: ToolDef[] } {
   const inputText = formatMessagesToInput(req);
+  const hasTools = req.tools && req.tools.length > 0;
+  const toolDefs = hasTools ? normalizeToolDefs(req.tools!) : [];
+  const { input: finalInput, outputFormat } = hasTools
+    ? injectTools(inputText, toolDefs)
+    : { input: inputText, outputFormat: null };
+
   const zoReq: ZoAskRequest = {
-    input: inputText,
+    input: finalInput,
     model_name: resolveZoModelName(req.model),
     stream: req.stream ?? false,
   };
+  if (outputFormat) {
+    zoReq.output_format = outputFormat;
+  }
   // Allow advanced clients to bypass the default Zo persona by passing
   // metadata.persona_id (see README).
   const personaId = req.metadata && typeof req.metadata === 'object'
@@ -134,7 +420,7 @@ export function anthropicToZo(req: AnthropicRequest): { zoReq: ZoAskRequest; inp
   if (typeof personaId === 'string' && personaId.length > 0) {
     zoReq.persona_id = personaId;
   }
-  return { zoReq, inputText };
+  return { zoReq, inputText, toolDefs };
 }
 
 export function zoToAnthropic(
@@ -142,12 +428,53 @@ export function zoToAnthropic(
   model: string,
   req: AnthropicRequest,
   inputText: string,
+  toolDefs: ToolDef[] = [],
 ): AnthropicResponse {
+  const hasTools = toolDefs.length > 0;
+
+  if (hasTools) {
+    const rawParsed = parseZoStructuredOutput(zoOutput);
+    const parsed = normalizeForClient(rawParsed, toolDefs);
+    const hasToolCalls = parsed.toolCalls.length > 0;
+
+    const content: AnthropicContentBlock[] = [];
+    if (parsed.text) {
+      content.push({ type: 'text', text: parsed.text });
+    }
+    if (hasToolCalls) {
+      for (const tc of parsed.toolCalls) {
+        content.push({
+          type: 'tool_use',
+          id: `toolu_${generateToolUseId()}`,
+          name: tc.name,
+          input: tc.arguments,
+        });
+      }
+    }
+    if (content.length === 0) {
+      content.push({ type: 'text', text: zoOutput || '' });
+    }
+
+    return {
+      id: generateMessageId(),
+      type: 'message',
+      role: 'assistant',
+      model,
+      content,
+      stop_reason: hasToolCalls ? 'tool_use' : 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: estimateTokens(inputText),
+        output_tokens: estimateTokens(zoOutput),
+      },
+    };
+  }
+
+  // No tools — original text-only path
   let text = zoOutput;
   let stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' = 'end_turn';
   let stopSequence: string | null = null;
 
-  // Honor stop_sequences client-side, since the Zo backend does not.
   const stopResult = applyStopSequences(text, req.stop_sequences);
   if (stopResult.matched) {
     text = stopResult.text;
@@ -155,11 +482,9 @@ export function zoToAnthropic(
     stopSequence = stopResult.matched;
   }
 
-  // Honor max_tokens client-side, since the Zo backend does not.
   const maxResult = applyMaxTokens(text, req.max_tokens);
   if (maxResult.truncated) {
     text = maxResult.text;
-    // max_tokens takes precedence over stop_sequence if it triggers first.
     if (stopReason === 'end_turn') {
       stopReason = 'max_tokens';
       stopSequence = null;
@@ -181,11 +506,20 @@ export function zoToAnthropic(
   };
 }
 
+function generateToolUseId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let id = '';
+  for (let i = 0; i < 24; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
 export async function forwardNonStreaming(
   req: AnthropicRequest,
   token: string,
 ): Promise<AnthropicResponse> {
-  const { zoReq, inputText } = anthropicToZo(req);
+  const { zoReq, inputText, toolDefs } = anthropicToZo(req);
   zoReq.stream = false;
 
   const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
@@ -203,15 +537,17 @@ export async function forwardNonStreaming(
   }
 
   const zoResp = (await resp.json()) as { output: string };
-  return zoToAnthropic(zoResp.output, req.model, req, inputText);
+  return zoToAnthropic(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
 export function buildStreamingResponse(
   req: AnthropicRequest,
   token: string,
 ): Response {
-  const { zoReq, inputText } = anthropicToZo(req);
-  zoReq.stream = true;
+  const { zoReq, inputText, toolDefs } = anthropicToZo(req);
+  const hasTools = toolDefs.length > 0;
+  // When tools are present, use non-streaming to reliably parse structured output
+  zoReq.stream = !hasTools;
   const model = req.model;
   const msgId = generateMessageId();
   const inputTokens = estimateTokens(inputText);
@@ -227,6 +563,100 @@ export function buildStreamingResponse(
   };
 
   (async () => {
+    // When tools are present, use non-streaming: fetch full response, parse, emit structured SSE
+    if (hasTools) {
+      try {
+        await write('message_start', {
+          type: 'message_start',
+          message: {
+            id: msgId, type: 'message', role: 'assistant', model,
+            content: [], stop_reason: null, stop_sequence: null,
+            usage: { input_tokens: inputTokens, output_tokens: 0 },
+          },
+        });
+
+        const resp = await fetch(`${ZO_API_BASE}/zo/ask`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(zoReq),
+        });
+
+        if (!resp.ok) {
+          const body = await resp.text();
+          await write('error', { type: 'error', error: { type: 'api_error', message: `Zo API error ${resp.status}: ${body}` } });
+          await writer.close();
+          return;
+        }
+
+        const zoResp = (await resp.json()) as { output: string };
+        const rawParsed = parseZoStructuredOutput(zoResp.output);
+        const parsed = normalizeForClient(rawParsed, toolDefs);
+        const hasToolCalls = parsed.toolCalls.length > 0;
+        let blockIndex = 0;
+
+        // Emit text block
+        if (parsed.text) {
+          await write('content_block_start', {
+            type: 'content_block_start', index: blockIndex,
+            content_block: { type: 'text', text: '' },
+          });
+          await write('content_block_delta', {
+            type: 'content_block_delta', index: blockIndex,
+            delta: { type: 'text_delta', text: parsed.text },
+          });
+          await write('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+          blockIndex++;
+        }
+
+        // Emit tool_use blocks
+        if (hasToolCalls) {
+          for (const tc of parsed.toolCalls) {
+            const toolId = `toolu_${generateToolUseId()}`;
+            await write('content_block_start', {
+              type: 'content_block_start', index: blockIndex,
+              content_block: { type: 'tool_use', id: toolId, name: tc.name, input: {} },
+            });
+            const argsJson = JSON.stringify(tc.arguments);
+            if (argsJson && argsJson !== '{}') {
+              await write('content_block_delta', {
+                type: 'content_block_delta', index: blockIndex,
+                delta: { type: 'input_json_delta', partial_json: argsJson },
+              });
+            }
+            await write('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+            blockIndex++;
+          }
+        }
+
+        if (!parsed.text && !hasToolCalls) {
+          await write('content_block_start', {
+            type: 'content_block_start', index: blockIndex,
+            content_block: { type: 'text', text: '' },
+          });
+          await write('content_block_delta', {
+            type: 'content_block_delta', index: blockIndex,
+            delta: { type: 'text_delta', text: zoResp.output || '' },
+          });
+          await write('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+        }
+
+        await write('message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: hasToolCalls ? 'tool_use' : 'end_turn', stop_sequence: null },
+          usage: { output_tokens: estimateTokens(zoResp.output) },
+        });
+        await write('message_stop', { type: 'message_stop' });
+        await writer.close();
+      } catch (err) {
+        try {
+          await write('error', { type: 'error', error: { type: 'api_error', message: (err as Error).message } });
+          await writer.close();
+        } catch { /* already closed */ }
+      }
+      return;
+    }
+
+    // Standard streaming path (no tools)
     let textBlockOpen = false;
     let thinkingBlockOpen = false;
     let textIndex = 0;
@@ -467,28 +897,6 @@ function resolveOpenAIModel(model: string): string {
   return resolveZoModelName(model);
 }
 
-function formatToolsPrompt(tools: OpenAITool[]): string {
-  const defs = tools.map((t) => {
-    const f = t.function;
-    let s = `- ${f.name}`;
-    if (f.description) s += `: ${f.description}`;
-    if (f.parameters) s += `\n  Parameters: ${JSON.stringify(f.parameters)}`;
-    return s;
-  }).join('\n');
-  return [
-    '# Tool Use Instructions',
-    'You have access to the following tools. When you need to use a tool, you MUST respond with ONLY a JSON block wrapped in <tool_call> tags.',
-    'You can make multiple tool calls. Format each call exactly as:',
-    '<tool_call>{"name": "function_name", "arguments": {"arg1": "value1"}}</tool_call>',
-    '',
-    'Available tools:',
-    defs,
-    '',
-    'IMPORTANT: When you decide to use a tool, your ENTIRE response must consist of <tool_call> blocks only, with no other text before or after them.',
-    'If you do not need to call any tool, respond normally without <tool_call> tags.',
-  ].join('\n');
-}
-
 function generateToolCallId(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let id = 'call_';
@@ -496,29 +904,6 @@ function generateToolCallId(): string {
     id += chars[Math.floor(Math.random() * chars.length)];
   }
   return id;
-}
-
-function parseToolCalls(text: string): { toolCalls: OpenAIToolCall[]; textContent: string } {
-  const toolCalls: OpenAIToolCall[] = [];
-  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      toolCalls.push({
-        id: generateToolCallId(),
-        type: 'function',
-        function: {
-          name: parsed.name,
-          arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments ?? {}),
-        },
-      });
-    } catch {
-      // skip malformed tool call
-    }
-  }
-  const textContent = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
-  return { toolCalls, textContent };
 }
 
 function extractOpenAIContent(content: string | OpenAIContentPart[] | null): string {
@@ -547,33 +932,34 @@ function formatMessageContent(msg: OpenAIMessage): string {
   return text;
 }
 
-function openaiToZo(req: OpenAIChatRequest): ZoAskRequest {
+function openaiToZo(req: OpenAIChatRequest): { zoReq: ZoAskRequest; toolDefs: ToolDef[] } {
   const parts: string[] = [];
   const hasTools = req.tools && req.tools.length > 0;
-  const toolsPrompt = hasTools ? formatToolsPrompt(req.tools!) : '';
+  const toolDefs = hasTools ? normalizeToolDefs(req.tools!) : [];
 
-  for (let i = 0; i < req.messages.length; i++) {
-    const msg = req.messages[i];
+  for (const msg of req.messages) {
     const role = msg.role === 'user' ? 'Human'
       : msg.role === 'system' ? 'System'
       : msg.role === 'tool' ? 'Tool'
       : 'Assistant';
-    let content = formatMessageContent(msg);
-    // Inject tool instructions into the last user message so the model sees them inline
-    if (hasTools && msg.role === 'user' && i === req.messages.length - 1) {
-      content = `${toolsPrompt}\n\n---\n\n${content}`;
-    }
+    const content = formatMessageContent(msg);
     parts.push(`[${role}]\n${content}`);
   }
-  // Fallback: if no user message at the end, prepend tool instructions as System block
-  if (hasTools && (req.messages.length === 0 || req.messages[req.messages.length - 1].role !== 'user')) {
-    parts.unshift(`[System]\n${toolsPrompt}`);
-  }
-  return {
-    input: parts.join('\n\n'),
+
+  const rawInput = parts.join('\n\n');
+  const { input: finalInput, outputFormat } = hasTools
+    ? injectTools(rawInput, toolDefs)
+    : { input: rawInput, outputFormat: null };
+
+  const zoReq: ZoAskRequest = {
+    input: finalInput,
     model_name: resolveOpenAIModel(req.model),
     stream: req.stream ?? false,
   };
+  if (outputFormat) {
+    zoReq.output_format = outputFormat;
+  }
+  return { zoReq, toolDefs };
 }
 
 function generateChatId(): string {
@@ -590,11 +976,55 @@ function zoToOpenAI(
   model: string,
   req: OpenAIChatRequest,
   inputText: string,
+  toolDefs: ToolDef[] = [],
 ): OpenAIChatResponse {
-  let text = zoOutput;
-  let finishReason: 'stop' | 'length' | 'tool_calls' = 'stop';
+  const promptTokens = estimateTokens(inputText);
+  const completionTokens = estimateTokens(zoOutput);
+  const hasTools = toolDefs.length > 0;
 
-  // Honor stop sequences client-side, since the Zo backend does not.
+  if (hasTools) {
+    const rawParsed = parseZoStructuredOutput(zoOutput);
+    const parsed = normalizeForClient(rawParsed, toolDefs);
+    const hasToolCalls = parsed.toolCalls.length > 0;
+
+    const message: OpenAIMessage = {
+      role: 'assistant',
+      content: parsed.text || null,
+    };
+
+    if (hasToolCalls) {
+      message.tool_calls = parsed.toolCalls.map((tc) => ({
+        id: generateToolCallId(),
+        type: 'function' as const,
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments),
+        },
+      }));
+    }
+
+    return {
+      id: generateChatId(),
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message,
+        finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
+      }],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    };
+  }
+
+  // No tools — original text-only path
+  let text = zoOutput;
+  let finishReason: 'stop' | 'length' = 'stop';
+
   const stopList = typeof req.stop === 'string'
     ? [req.stop]
     : Array.isArray(req.stop) ? req.stop : undefined;
@@ -609,36 +1039,6 @@ function zoToOpenAI(
     finishReason = 'length';
   }
 
-  const promptTokens = estimateTokens(inputText);
-  const completionTokens = estimateTokens(text);
-
-  const hasTools = req.tools && req.tools.length > 0;
-  if (hasTools) {
-    const { toolCalls, textContent } = parseToolCalls(text);
-    if (toolCalls.length > 0) {
-      return {
-        id: generateChatId(),
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: textContent || null,
-            tool_calls: toolCalls,
-          },
-          finish_reason: 'tool_calls',
-        }],
-        usage: {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-        },
-      };
-    }
-  }
-
   return {
     id: generateChatId(),
     object: 'chat.completion',
@@ -651,8 +1051,8 @@ function zoToOpenAI(
     }],
     usage: {
       prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens,
+      completion_tokens: estimateTokens(text),
+      total_tokens: promptTokens + estimateTokens(text),
     },
   };
 }
@@ -661,7 +1061,7 @@ export async function forwardOpenAINonStreaming(
   req: OpenAIChatRequest,
   token: string,
 ): Promise<OpenAIChatResponse> {
-  const zoReq = openaiToZo(req);
+  const { zoReq, toolDefs } = openaiToZo(req);
   zoReq.stream = false;
   const inputText = zoReq.input;
 
@@ -677,16 +1077,16 @@ export async function forwardOpenAINonStreaming(
   }
 
   const zoResp = (await resp.json()) as { output: string };
-  return zoToOpenAI(zoResp.output, req.model, req, inputText);
+  return zoToOpenAI(zoResp.output, req.model, req, inputText, toolDefs);
 }
 
 export function buildOpenAIStreamingResponse(
   req: OpenAIChatRequest,
   token: string,
 ): Response {
-  const zoReq = openaiToZo(req);
-  const hasTools = req.tools && req.tools.length > 0;
-  // When tools are present, use non-streaming to reliably parse tool calls from the complete response
+  const { zoReq, toolDefs } = openaiToZo(req);
+  const hasTools = toolDefs.length > 0;
+  // When tools are present, use non-streaming to reliably parse structured output
   zoReq.stream = !hasTools;
   const model = req.model;
   const chatId = generateChatId();
@@ -729,27 +1129,23 @@ export function buildOpenAIStreamingResponse(
       }
 
       if (hasTools) {
-        // Non-streaming path for tool calls: read entire response, parse tool calls, emit as SSE
+        // Non-streaming path for tool calls: read entire response, parse structured output, emit as SSE
         const zoResp = (await resp.json()) as { output: string };
-        let text = zoResp.output;
+        const rawParsed = parseZoStructuredOutput(zoResp.output);
+        const parsed = normalizeForClient(rawParsed, toolDefs);
+        const hasToolCalls = parsed.toolCalls.length > 0;
 
-        const stopResult = applyStopSequences(text, stopList.length > 0 ? stopList : undefined);
-        if (stopResult.matched) text = stopResult.text;
-        const maxResult = applyMaxTokens(text, req.max_tokens);
-        if (maxResult.truncated) text = maxResult.text;
+        if (parsed.text) {
+          const contentChunk: OpenAIStreamChunk = {
+            id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
+            model, choices: [{ index: 0, delta: { content: parsed.text }, finish_reason: null }],
+          };
+          await writeSSE(JSON.stringify(contentChunk));
+        }
 
-        const { toolCalls, textContent } = parseToolCalls(text);
-
-        if (toolCalls.length > 0) {
-          if (textContent) {
-            const contentChunk: OpenAIStreamChunk = {
-              id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-              model, choices: [{ index: 0, delta: { content: textContent }, finish_reason: null }],
-            };
-            await writeSSE(JSON.stringify(contentChunk));
-          }
-          for (let i = 0; i < toolCalls.length; i++) {
-            const tc = toolCalls[i];
+        if (hasToolCalls) {
+          for (let i = 0; i < parsed.toolCalls.length; i++) {
+            const tc = parsed.toolCalls[i];
             const toolChunk: OpenAIStreamChunk = {
               id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
               model, choices: [{
@@ -757,9 +1153,9 @@ export function buildOpenAIStreamingResponse(
                 delta: {
                   tool_calls: [{
                     index: i,
-                    id: tc.id,
+                    id: generateToolCallId(),
                     type: 'function',
-                    function: { name: tc.function.name, arguments: tc.function.arguments },
+                    function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
                   }],
                 },
                 finish_reason: null,
@@ -773,26 +1169,26 @@ export function buildOpenAIStreamingResponse(
           };
           await writeSSE(JSON.stringify(endChunk));
         } else {
-          if (text) {
+          if (!parsed.text && zoResp.output) {
             const contentChunk: OpenAIStreamChunk = {
               id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-              model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+              model, choices: [{ index: 0, delta: { content: zoResp.output }, finish_reason: null }],
             };
             await writeSSE(JSON.stringify(contentChunk));
           }
           const endChunk: OpenAIStreamChunk = {
             id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-            model, choices: [{ index: 0, delta: {}, finish_reason: maxResult.truncated ? 'length' : 'stop' }],
+            model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
           };
           await writeSSE(JSON.stringify(endChunk));
         }
         if (includeUsage) {
-          const promptTokens = estimateTokens(inputText);
-          const completionTokens = estimateTokens(text);
+          const pTokens = estimateTokens(inputText);
+          const cTokens = estimateTokens(zoResp.output);
           const usageChunk: OpenAIStreamChunk = {
             id: chatId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
             model, choices: [],
-            usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+            usage: { prompt_tokens: pTokens, completion_tokens: cTokens, total_tokens: pTokens + cTokens },
           };
           await writeSSE(JSON.stringify(usageChunk));
         }

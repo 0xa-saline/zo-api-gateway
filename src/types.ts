@@ -6,7 +6,7 @@ export interface AnthropicMessage {
 }
 
 export interface AnthropicContentBlock {
-  type: 'text' | 'image' | 'thinking';
+  type: 'text' | 'image' | 'thinking' | 'tool_use' | 'tool_result';
   text?: string;
   thinking?: string;
   source?: {
@@ -14,11 +14,31 @@ export interface AnthropicContentBlock {
     media_type: string;
     data: string;
   };
+  // tool_use fields
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  // tool_result fields
+  tool_use_id?: string;
+  content?: string | AnthropicContentBlock[];
+  is_error?: boolean;
 }
 
 export interface AnthropicThinkingConfig {
   type: 'enabled' | 'disabled';
   budget_tokens?: number;
+}
+
+export interface AnthropicToolInputSchema {
+  type: 'object';
+  properties?: Record<string, unknown>;
+  required?: string[];
+}
+
+export interface AnthropicTool {
+  name: string;
+  description?: string;
+  input_schema: AnthropicToolInputSchema;
 }
 
 export interface AnthropicRequest {
@@ -33,6 +53,8 @@ export interface AnthropicRequest {
   stop_sequences?: string[];
   thinking?: AnthropicThinkingConfig;
   metadata?: Record<string, unknown>;
+  tools?: AnthropicTool[];
+  tool_choice?: { type: 'auto' | 'any' | 'tool'; name?: string };
 }
 
 export interface AnthropicResponse {
@@ -41,7 +63,7 @@ export interface AnthropicResponse {
   role: 'assistant';
   model: string;
   content: AnthropicContentBlock[];
-  stop_reason: 'end_turn' | 'max_tokens' | 'stop_sequence' | null;
+  stop_reason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | null;
   stop_sequence: string | null;
   usage: {
     input_tokens: number;

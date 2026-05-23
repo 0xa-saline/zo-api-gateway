@@ -5,10 +5,12 @@
 ## 功能
 
 - 兼容 Anthropic Messages API `/v1/messages` 端点
+- 兼容 OpenAI Chat Completions API `/v1/chat/completions` 端点
+- **支持 Tool Use / Function Calling** — 利用 Zo `output_format` 结构化输出实现可靠的工具调用
 - 支持流式 (SSE) 和非流式响应
 - 支持 `Authorization: Bearer` 和 `x-api-key` 双认证
 - 支持 `system` 系统提示词
-- 支持所有 Zo Computer 上可用的 Anthropic 模型
+- 支持所有 Zo Computer 上可用的模型
 - **号池管理面板** — Web 界面在线管理 Zo Token（添加/删除/启停），无需改代码
 - **多 Key 聚合** — 多个 Zo Token 轮询调度，自动故障切换，对外统一为一个 Key
 - GitHub Actions 自动部署，push 到 main 即自动更新
@@ -211,14 +213,24 @@ curl -s https://YOUR_WORKER_URL/v1/messages \
 
 由于上游只接受 `input: string`，本网关会把客户端的 `system` 字段以 `[System]\n...` 文本前缀的方式拼到对话开头送给 Zo。**这不是真正的 system 通道**，模型有概率识别出这是"对话内容里的指令"并**主动选择不遵守**（已实测）。需要可靠 system 行为请走上面的 `persona_id` 路径。
 
+### Tool Use 支持说明
+
+网关通过 Zo 的 `output_format` 结构化输出功能实现了工具调用支持：
+
+- **OpenAI 格式**：支持 `tools` 参数，响应中返回标准的 `tool_calls` 结构
+- **Anthropic 格式**：支持 `tools` 参数，响应中返回 `tool_use` content block
+- 当请求包含工具定义时，网关会将工具描述注入到 prompt 中，并使用 Zo 的 `output_format` 约束模型输出为结构化 JSON（`text` + `tool_name` + `tool_args`），然后解析为标准 API 格式返回
+- 流式模式下，带工具的请求会先以非流式方式获取完整响应，解析后再以 SSE 事件流形式发送，确保工具调用的可靠性
+- 支持工具名称和参数的自动映射与纠正（模糊匹配）
+
+**限制**：工具调用的可靠性取决于模型对 `output_format` 的遵从程度，不保证 100% 与官方 API 行为一致。
+
 ### 不支持的功能
 
 | 功能 | 状态 | 备注 |
 |---|---|---|
 | 多模态输入 (`image` content block) | **静默丢弃** | `/zo/ask` 不接受图片，图片在网关层被过滤 |
-| Tool use / tool_result | **不支持** | 类型上没有，请求里有也会被丢 |
 | Extended thinking（`thinking` 参数）| **请求侧不透传** | Zo 后端无对应入口；网关响应侧已**预留** thinking part_kind → Anthropic `thinking` content_block 的转换，一旦上游开始透出会自动生效 |
-| `tools` / `tool_choice` | **不支持** | 同上 |
 
 ### 响应元数据是估算/重建的，不是上游透传
 
