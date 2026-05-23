@@ -43,6 +43,15 @@ export function getAdminHTML(baseUrl: string): string {
     .card-fill .pagination { margin-top: auto; }
     .card h3 { font-size: 1rem; font-weight: 600; color: #1c1917; margin-bottom: 16px; }
 
+    /* Strategy selector */
+    .strategy-card { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .strategy-card h3 { margin-bottom: 0; white-space: nowrap; }
+    .strategy-options { display: flex; gap: 8px; }
+    .strategy-btn { padding: 8px 20px; border: 2px solid #e7e5e4; border-radius: 10px; background: #fff; cursor: pointer; font-size: 0.85rem; font-weight: 600; color: #78716c; transition: all 0.15s; display: flex; align-items: center; gap: 8px; }
+    .strategy-btn:hover { border-color: #a8a29e; color: #1c1917; }
+    .strategy-btn.active { border-color: #1c1917; background: #1c1917; color: #fff; }
+    .strategy-desc { font-size: 0.8rem; color: #a8a29e; margin-left: auto; }
+
     /* Stats */
     .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 24px; width: 100%; }
     .stat-card { background: #fff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 20px; }
@@ -191,6 +200,20 @@ export function getAdminHTML(baseUrl: string): string {
         <div class="stat-card"><div class="label">\u5df2\u7981\u7528</div><div class="value red" id="s-disabled">0</div></div>
         <div class="stat-card"><div class="label">\u5df2\u9a8c\u8bc1\u6709\u6548</div><div class="value green" id="s-valid">0</div></div>
         <div class="stat-card"><div class="label">\u652f\u6301\u6a21\u578b</div><div class="value purple" id="s-models">11</div></div>
+      </div>
+      <div class="card">
+        <div class="strategy-card">
+          <h3>\u8c03\u5ea6\u7b56\u7565</h3>
+          <div class="strategy-options">
+            <button class="strategy-btn active" id="btn-round-robin" onclick="setStrategy('round-robin')">
+              &#8634; \u8f6e\u8be2
+            </button>
+            <button class="strategy-btn" id="btn-sticky" onclick="setStrategy('sticky')">
+              &#128204; \u586b\u5145\u4f18\u5148
+            </button>
+          </div>
+          <span class="strategy-desc" id="strategy-desc">\u6bcf\u6b21\u8c03\u7528\u4f9d\u6b21\u8f6e\u8be2\u6240\u6709 Key</span>
+        </div>
       </div>
       <div class="card">
         <h3>\u652f\u6301\u7684\u6a21\u578b</h3>
@@ -345,6 +368,7 @@ const PAGE_SIZE = 10;
 let tokenPage = 1;
 let recentPage = 1;
 let allTokens = [];
+let currentStrategy = 'round-robin';
 
 const ZO_MODELS = [
   { name: 'claude-opus-4-7', provider: 'anthropic' },
@@ -462,7 +486,36 @@ async function loadDashboard() {
     renderModelTags();
     recentPage = 1;
     renderRecent();
+    loadStrategy();
   } catch (e) { toast('\u52a0\u8f7d\u5931\u8d25\uff1a' + e.message, false); }
+}
+
+async function loadStrategy() {
+  try {
+    const data = await api('GET', '/admin/strategy');
+    currentStrategy = data.strategy || 'round-robin';
+    updateStrategyUI();
+  } catch (e) { /* ignore */ }
+}
+
+function updateStrategyUI() {
+  const btnRR = document.getElementById('btn-round-robin');
+  const btnSt = document.getElementById('btn-sticky');
+  const desc = document.getElementById('strategy-desc');
+  btnRR.classList.toggle('active', currentStrategy === 'round-robin');
+  btnSt.classList.toggle('active', currentStrategy === 'sticky');
+  desc.textContent = currentStrategy === 'round-robin'
+    ? '\u6bcf\u6b21\u8c03\u7528\u4f9d\u6b21\u8f6e\u8be2\u6240\u6709 Key'
+    : '\u4f18\u5148\u4f7f\u7528\u540c\u4e00\u4e2a Key\uff0c\u5931\u8d25\u540e\u5207\u6362';
+}
+
+async function setStrategy(strategy) {
+  try {
+    await api('PUT', '/admin/strategy', { strategy });
+    currentStrategy = strategy;
+    updateStrategyUI();
+    toast(strategy === 'round-robin' ? '\u5df2\u5207\u6362\u4e3a\u8f6e\u8be2\u6a21\u5f0f' : '\u5df2\u5207\u6362\u4e3a\u586b\u5145\u4f18\u5148\u6a21\u5f0f');
+  } catch (e) { toast(e.message, false); }
 }
 
 async function loadTokens() {
