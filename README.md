@@ -20,11 +20,12 @@
 
 部署后访问 `https://你的域名/admin` 即可打开管理面板：
 
-- 用 Gateway Key 登录
+- 用 Admin Key 登录
 - 查看所有 Token 的状态（总计/可用/已禁用）
 - 在线添加新 Token（单个或批量导入）
 - 启用/禁用/删除 Token
 - Token 数据持久化在 Cloudflare KV 中，不会丢失
+- 已部署实例会在首次访问 token / log 相关接口时自动迁移旧 KV blob 数据，无需手动处理
 
 ## 两种工作模式
 
@@ -34,7 +35,7 @@
 
 ### 多 Key 聚合模式
 
-配置 Gateway Key 后，通过管理面板添加多个 Zo Token。客户端只需要用一个 Gateway Key，网关自动轮询选择后端 Token。
+配置 `GATEWAY_KEY` 和 `ADMIN_KEY` 后，通过管理面板添加多个 Zo Token。客户端只需要用一个 Gateway Key，网关自动轮询选择后端 Token；如果当前没有任何可用的池内 Token，请求会返回 `503`，不会回退成直通模式。
 
 ```
 客户端 → Gateway Key → Worker → 轮询选择 Zo Token → api.zo.computer
@@ -80,9 +81,12 @@
 | `CLOUDFLARE_API_TOKEN` | 第 2 步获取的 API 令牌 | Cloudflare 部署凭证 |
 | `CLOUDFLARE_ACCOUNT_ID` | 第 3 步获取的账户 ID | Cloudflare 账户标识 |
 | `KV_NAMESPACE_ID` | 第 4 步获取的 KV 命名空间 ID | Token 数据存储 |
-| `GATEWAY_KEY` | 你自定义的统一 Key，比如 `sk-my-key-xxx` | 客户端 API 密钥 + 管理面板登录密码 |
+| `GATEWAY_KEY` | 你自定义的客户端调用 Key，比如 `sk-gw-xxx` | 客户端访问 `/v1/*` 的统一 API 密钥 |
+| `ADMIN_KEY` | 你自定义的管理 Key，比如 `sk-admin-xxx` | 管理面板和 `/admin/*` 的登录密钥 |
 
 所有配置都在 GitHub Secrets 里完成，不需要去 Cloudflare Dashboard 手动设置任何变量。
+
+> 注意：`ADMIN_KEY` 未配置，或与 `GATEWAY_KEY` 相同时，管理面访问会返回 `503 Admin access is unavailable.`。
 
 ### 第 6 步：触发部署
 
@@ -97,7 +101,7 @@
 ### 通过管理面板（推荐）
 
 1. 访问 `https://你的域名/admin`
-2. 用 Gateway Key 登录
+2. 用 Admin Key 登录
 3. 在面板上添加 Zo Token（支持单个添加和批量导入）
 4. 可以随时启用/禁用/删除 Token
 

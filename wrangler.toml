@@ -10,5 +10,6 @@ binding = "KV"
 id = "YOUR_KV_NAMESPACE_ID"
 
 # [vars]
-# GATEWAY_KEY = "your-unified-api-key"
+# GATEWAY_KEY = "your-client-gateway-key"
+# ADMIN_KEY = "your-admin-panel-key"
 # COOLDOWN_MS = "60000"

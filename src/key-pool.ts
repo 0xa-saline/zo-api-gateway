@@ -1,3 +1,5 @@
+import { tokenToId } from './token-store';
+
 export type DispatchStrategy = 'round-robin' | 'sticky';
 
 export interface KeyPoolConfig {
@@ -82,12 +84,22 @@ function resetAll(tokens: string[]): void {
   }
 }
 
-export function getPoolStatus(config: KeyPoolConfig): { total: number; available: number; strategy: DispatchStrategy; stickyToken: string | null } {
+export function getPoolStatus(config: KeyPoolConfig): {
+  total: number;
+  available: number;
+  strategy: DispatchStrategy;
+  stickyToken: null;
+  stickyTokenId: string | null;
+} {
   const available = getAvailable(config.tokens, config.cooldownMs).length;
+  const currentStickyToken = config.strategy === 'sticky' && stickyToken && config.tokens.includes(stickyToken)
+    ? stickyToken
+    : null;
   return {
     total: config.tokens.length,
     available,
     strategy: config.strategy,
-    stickyToken: config.strategy === 'sticky' ? stickyToken : null,
+    stickyToken: null,
+    stickyTokenId: currentStickyToken ? tokenToId(currentStickyToken) : null,
   };
 }

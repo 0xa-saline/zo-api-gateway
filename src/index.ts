@@ -5,13 +5,14 @@ import type { DispatchStrategy } from './key-pool';
 import { getTokens, addToken, removeToken, toggleToken, updateToken, getEnabledTokenStrings, updateTokenStatus, autoDisableToken, tokenToId, maskToken, findTokenById } from './token-store';
 import { getLogs, addLog } from './call-log';
 import { checkTokenValidity } from './key-checker';
-import { FAVICON_BASE64 } from './favicon';
+import { FAVICON_SVG } from './favicon';
 import type { AnthropicRequest, OpenAIChatRequest } from './types';
 import type { KeyPoolConfig } from './key-pool';
 
 interface Env {
   KV: KVNamespace;
   GATEWAY_KEY?: string;
+  ADMIN_KEY?: string;
   ZO_TOKENS?: string;
   COOLDOWN_MS?: string;
 }
@@ -63,6 +64,57 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+async function parseJsonObjectBody(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await request.json();
+    return isJsonObject(body) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateOpenAIToolCallArguments(body: OpenAIChatRequest): string | null {
+  for (const rawMsg of body.messages as unknown[]) {
+    if (!isJsonObject(rawMsg)) {
+      return 'messages[] must be JSON objects.';
+    }
+    if (rawMsg.tool_calls === undefined) continue;
+    if (rawMsg.role !== 'assistant') continue;
+    if (!Array.isArray(rawMsg.tool_calls)) {
+      return 'tool_calls must be an array.';
+    }
+    for (const rawToolCall of rawMsg.tool_calls) {
+      if (!isJsonObject(rawToolCall) || !isJsonObject(rawToolCall.function)) {
+        return 'tool_calls[] must contain function objects.';
+      }
+      if (typeof rawToolCall.function.arguments !== 'string') {
+        return 'tool_calls[].function.arguments must be a JSON string.';
+      }
+      try {
+        const parsed = JSON.parse(rawToolCall.function.arguments);
+        if (!isJsonObject(parsed)) {
+          return 'tool_calls[].function.arguments must be a JSON object.';
+        }
+      } catch {
+        return 'tool_calls[].function.arguments must be valid JSON.';
+      }
+    }
+  }
+  return null;
+}
+
 function parseEnvTokens(raw: string): string[] {
   return raw.split(',').map((t) => t.trim()).filter(Boolean);
 }
@@ -105,16 +157,31 @@ function isGatewayMode(env: Env): boolean {
   return !!env.GATEWAY_KEY;
 }
 
-function verifyAdmin(request: Request, env: Env): boolean {
-  if (!env.GATEWAY_KEY) return false;
+function getAdminConfigError(env: Env): string | null {
+  if (!env.ADMIN_KEY) return 'Admin access is unavailable.';
+  if (env.GATEWAY_KEY && env.ADMIN_KEY === env.GATEWAY_KEY) {
+    return 'Admin access is unavailable.';
+  }
+  return null;
+}
+
+function verifyAdmin(request: Request, env: Env): Response | null {
+  const configError = getAdminConfigError(env);
+  if (configError) {
+    return jsonResponse({ error: configError }, 503);
+  }
   const key = extractClientKey(request);
-  return key === env.GATEWAY_KEY;
+  if (key !== env.ADMIN_KEY) {
+    return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+  return null;
 }
 
 function resolveToken(clientKey: string, env: Env, poolConfig: KeyPoolConfig | null): string | null {
   const gatewayMode = isGatewayMode(env);
-  if (gatewayMode && poolConfig) {
+  if (gatewayMode) {
     if (clientKey !== env.GATEWAY_KEY) return null;
+    if (!poolConfig) return '';
     return pickToken(poolConfig);
   }
   return clientKey;
@@ -129,13 +196,25 @@ export default {
     }
 
     // Favicon
-    if (url.pathname === '/favicon.ico' && request.method === 'GET') {
-      const buf = Uint8Array.from(atob(FAVICON_BASE64), (c) => c.charCodeAt(0));
-      return new Response(buf, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800', ...corsHeaders() } });
+    if ((url.pathname === '/favicon.svg' || url.pathname === '/favicon.ico') && request.method === 'GET') {
+      return new Response(FAVICON_SVG.trim(), {
+        headers: {
+          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=604800',
+          ...corsHeaders(),
+        },
+      });
     }
 
     // Admin panel
     if ((url.pathname === '/' || url.pathname === '/admin') && request.method === 'GET') {
+      const adminConfigError = getAdminConfigError(env);
+      if (adminConfigError) {
+        return new Response(adminConfigError, {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() },
+        });
+      }
       const baseUrl = `${url.protocol}//${url.host}`;
       return new Response(getAdminHTML(baseUrl), {
         headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() },
@@ -156,8 +235,9 @@ export default {
 
     // Admin API - tokens
     if (url.pathname === '/admin/tokens') {
-      if (!verifyAdmin(request, env)) {
-        return jsonResponse({ error: 'Unauthorized' }, 401);
+      const adminAuth = verifyAdmin(request, env);
+      if (adminAuth) {
+        return adminAuth;
       }
 
       if (request.method === 'GET') {
@@ -179,8 +259,12 @@ export default {
       }
 
       if (request.method === 'POST') {
-        const body = (await request.json()) as { token: string; email?: string; spaceName?: string };
-        if (!body.token) return jsonResponse({ error: 'token is required' }, 400);
+        const body = await parseJsonObjectBody(request);
+        if (!body) return jsonResponse({ error: 'Invalid JSON body.' }, 400);
+        if (!isNonEmptyString(body.token)) return jsonResponse({ error: 'token must be a non-empty string.' }, 400);
+        if (!isOptionalString(body.email) || !isOptionalString(body.spaceName)) {
+          return jsonResponse({ error: 'email and spaceName must be strings.' }, 400);
+        }
         try {
           const tokens = await addToken(env.KV, body.token, body.email, body.spaceName);
           return jsonResponse({ ok: true, count: tokens.length });
@@ -190,7 +274,14 @@ export default {
       }
 
       if (request.method === 'DELETE') {
-        const body = (await request.json()) as { token?: string; tokenId?: string };
+        const body = await parseJsonObjectBody(request);
+        if (!body) return jsonResponse({ error: 'Invalid JSON body.' }, 400);
+        if (body.token !== undefined && !isNonEmptyString(body.token)) {
+          return jsonResponse({ error: 'token must be a non-empty string.' }, 400);
+        }
+        if (body.tokenId !== undefined && !isNonEmptyString(body.tokenId)) {
+          return jsonResponse({ error: 'tokenId must be a non-empty string.' }, 400);
+        }
         const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
         if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
         const tokens = await removeToken(env.KV, rawToken);
@@ -198,7 +289,20 @@ export default {
       }
 
       if (request.method === 'PATCH') {
-        const body = (await request.json()) as { token?: string; tokenId?: string; enabled?: boolean; email?: string; spaceName?: string };
+        const body = await parseJsonObjectBody(request);
+        if (!body) return jsonResponse({ error: 'Invalid JSON body.' }, 400);
+        if (body.token !== undefined && !isNonEmptyString(body.token)) {
+          return jsonResponse({ error: 'token must be a non-empty string.' }, 400);
+        }
+        if (body.tokenId !== undefined && !isNonEmptyString(body.tokenId)) {
+          return jsonResponse({ error: 'tokenId must be a non-empty string.' }, 400);
+        }
+        if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+          return jsonResponse({ error: 'enabled must be a boolean.' }, 400);
+        }
+        if (!isOptionalString(body.email) || !isOptionalString(body.spaceName)) {
+          return jsonResponse({ error: 'email and spaceName must be strings.' }, 400);
+        }
         const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
         if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
         if (body.enabled !== undefined) {
@@ -221,8 +325,9 @@ export default {
 
     // Admin API - check tokens (validate and auto-disable)
     if (url.pathname === '/admin/check-tokens' && request.method === 'POST') {
-      if (!verifyAdmin(request, env)) {
-        return jsonResponse({ error: 'Unauthorized' }, 401);
+      const adminAuth = verifyAdmin(request, env);
+      if (adminAuth) {
+        return adminAuth;
       }
 
       const tokens = await getTokens(env.KV);
@@ -267,11 +372,19 @@ export default {
 
     // Admin API - check single token
     if (url.pathname === '/admin/check-token' && request.method === 'POST') {
-      if (!verifyAdmin(request, env)) {
-        return jsonResponse({ error: 'Unauthorized' }, 401);
+      const adminAuth = verifyAdmin(request, env);
+      if (adminAuth) {
+        return adminAuth;
       }
 
-      const body = (await request.json()) as { token?: string; tokenId?: string };
+      const body = await parseJsonObjectBody(request);
+      if (!body) return jsonResponse({ error: 'Invalid JSON body.' }, 400);
+      if (body.token !== undefined && !isNonEmptyString(body.token)) {
+        return jsonResponse({ error: 'token must be a non-empty string.' }, 400);
+      }
+      if (body.tokenId !== undefined && !isNonEmptyString(body.tokenId)) {
+        return jsonResponse({ error: 'tokenId must be a non-empty string.' }, 400);
+      }
       const rawToken = body.token || (body.tokenId ? await findTokenById(env.KV, body.tokenId) : null);
       if (!rawToken) return jsonResponse({ error: 'token or tokenId is required' }, 400);
 
@@ -293,8 +406,9 @@ export default {
 
     // Admin API - dispatch strategy
     if (url.pathname === '/admin/strategy') {
-      if (!verifyAdmin(request, env)) {
-        return jsonResponse({ error: 'Unauthorized' }, 401);
+      const adminAuth = verifyAdmin(request, env);
+      if (adminAuth) {
+        return adminAuth;
       }
 
       if (request.method === 'GET') {
@@ -303,7 +417,9 @@ export default {
       }
 
       if (request.method === 'PUT') {
-        const body = (await request.json()) as { strategy: string };
+        const parsed = await parseJsonObjectBody(request);
+        if (!parsed) return jsonResponse({ error: 'Invalid JSON body.' }, 400);
+        const body = parsed as { strategy?: string };
         if (body.strategy !== 'round-robin' && body.strategy !== 'sticky') {
           return jsonResponse({ error: 'strategy must be "round-robin" or "sticky"' }, 400);
         }
@@ -316,8 +432,9 @@ export default {
 
     // Admin API - logs
     if (url.pathname === '/admin/logs' && request.method === 'GET') {
-      if (!verifyAdmin(request, env)) {
-        return jsonResponse({ error: 'Unauthorized' }, 401);
+      const adminAuth = verifyAdmin(request, env);
+      if (adminAuth) {
+        return adminAuth;
       }
       const logs = await getLogs(env.KV);
       return jsonResponse({ logs });
@@ -438,6 +555,10 @@ export default {
       }
       if (!body.model) {
         return errorResponse(400, 'invalid_request_error', 'model is required.');
+      }
+      const toolCallArgumentsError = validateOpenAIToolCallArguments(body);
+      if (toolCallArgumentsError) {
+        return errorResponse(400, 'invalid_request_error', toolCallArgumentsError);
       }
 
       const maxRetries = poolConfig ? poolConfig.tokens.length : 1;

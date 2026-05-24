@@ -26,7 +26,7 @@ export function getAdminHTML(baseUrl: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Zo Gateway</title>
-  <link rel="icon" type="image/png" href="/favicon.ico">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f4; color: #1c1917; line-height: 1.6; }
@@ -189,8 +189,8 @@ export function getAdminHTML(baseUrl: string): string {
     <h1>Zo Gateway</h1>
     <p class="sub">\u53f7\u6c60\u7ba1\u7406\u7cfb\u7edf</p>
     <div class="input-group">
-      <label>Gateway Key</label>
-      <input type="password" id="login-key" placeholder="\u8f93\u5165\u7ba1\u7406\u5bc6\u94a5" autofocus>
+      <label>Admin Key</label>
+      <input type="password" id="login-key" placeholder="\u8f93\u5165 Admin Key" autofocus>
     </div>
     <label class="remember"><input type="checkbox" id="remember-me" checked> \u4ec5\u672c\u4f1a\u8bdd\u8bb0\u4f4f\u767b\u5f55\u72b6\u6001</label>
     <button class="btn btn-primary btn-block" onclick="login()">\u767b\u5f55</button>
@@ -351,7 +351,7 @@ claude</div>
         <h3>\u8fdc\u7a0b\u5bfc\u5165 Token\uff08\u811a\u672c/\u63d2\u4ef6\u7528\uff09</h3>
         <div class="code-box">curl -X POST ${safeBaseUrl}/admin/tokens \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \\
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \\
   -d '{
     "token": "zo_sk_xxx",
     "email": "user@example.com",
@@ -463,7 +463,7 @@ function renderPagination(containerId, total, currentPage, onPageChange) {
 
 // Auto login
 (function tryAutoLogin() {
-  const saved = sessionStorage.getItem('zo_gw_key');
+  const saved = sessionStorage.getItem('zo_admin_key');
   if (saved) {
     authKey = saved;
     api('GET', '/admin/tokens').then(() => {
@@ -471,30 +471,30 @@ function renderPagination(containerId, total, currentPage, onPageChange) {
       document.getElementById('app').style.display = 'flex';
       loadDashboard();
     }).catch(() => {
-      sessionStorage.removeItem('zo_gw_key');
+      sessionStorage.removeItem('zo_admin_key');
     });
   }
 })();
 
 async function login() {
   authKey = document.getElementById('login-key').value.trim();
-  if (!authKey) return toast('\u8bf7\u8f93\u5165 Gateway Key', false);
+  if (!authKey) return toast('\u8bf7\u8f93\u5165 Admin Key', false);
   try {
     await api('GET', '/admin/tokens');
     if (document.getElementById('remember-me').checked) {
-      sessionStorage.setItem('zo_gw_key', authKey);
+      sessionStorage.setItem('zo_admin_key', authKey);
     } else {
-      sessionStorage.removeItem('zo_gw_key');
+      sessionStorage.removeItem('zo_admin_key');
     }
     document.getElementById('login-view').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
     loadDashboard();
-  } catch (e) { toast('\u5bc6\u94a5\u9519\u8bef', false); }
+  } catch (e) { toast(e.message || '\u767b\u5f55\u5931\u8d25', false); }
 }
 
 function logout() {
   authKey = '';
-  sessionStorage.removeItem('zo_gw_key');
+  sessionStorage.removeItem('zo_admin_key');
   document.getElementById('app').style.display = 'none';
   document.getElementById('login-view').style.display = 'flex';
   document.getElementById('login-key').value = '';
