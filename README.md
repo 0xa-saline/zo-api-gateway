@@ -88,6 +88,19 @@
 
 > 注意：`ADMIN_KEY` 未配置，或与 `GATEWAY_KEY` 相同时，管理面访问会返回 `503 Admin access is unavailable.`。
 
+**需要改的两个地方：**
+
+#### **第 1 步：修改 Fork 工作流审批政策**
+1. 进入：settings/actions
+2. 找到 **"Approval for running fork pull request workflows"** 部分
+3. **选择**：`Require approval for all external contributors`（或第一个选项）
+4. 点 **Save**
+
+#### **第 2 步：修改工作流权限**
+1. 在同一页面，找到 **"Workflow permissions"** 部分
+2. **选择**：`Read and write permissions` ✅
+3. 点 **Save**
+
 ### 第 6 步：触发部署
 
 随便改一下代码（比如编辑 README），push 到 main 分支，GitHub Actions 会自动部署。
